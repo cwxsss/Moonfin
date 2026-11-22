@@ -1,0 +1,123 @@
+/// Why a slide gets a banner: what aired lately, or a movie that's new.
+enum MediaBarNewRelease { newSeries, newSeason, newEpisodes, newMovie }
+
+/// What a slide's banner says, and the detail line under it.
+class MediaBarNewReleaseInfo {
+  final MediaBarNewRelease kind;
+
+  /// The season the new episodes belong to. 0 for a movie.
+  final int season;
+
+  /// The latest new episode, when the season comes out episode by episode.
+  final int? episode;
+
+  /// A new movie's tagline, in the server's metadata language only.
+  final String? tagline;
+
+  const MediaBarNewReleaseInfo({
+    required this.kind,
+    this.season = 0,
+    this.episode,
+    this.tagline,
+  });
+}
+
+class MediaBarSlideItem {
+  final String itemId;
+  final String serverId;
+  final String title;
+  final String? overview;
+  final String? backdropUrl;
+
+  /// The wide banner art, which usually has the title painted into it.
+  final String? bannerUrl;
+  final String? logoUrl;
+  final String? posterUrl;
+  final String? officialRating;
+  final int? year;
+  final List<String> genres;
+  final Duration? runtime;
+  final double? communityRating;
+  final int? criticRating;
+  final String? tmdbId;
+  final String? imdbId;
+  final String itemType;
+  final List<Map<String, dynamic>> remoteTrailers;
+
+  /// Set on a series whose episodes aired within the chosen window.
+  final MediaBarNewReleaseInfo? newRelease;
+
+  /// How many seasons a series has, from the server's ChildCount.
+  final int? childCount;
+  final bool isFavorite;
+
+  /// The id outside titles carry in place of a server, as on Home.
+  static const externalServerId = 'seerr';
+
+  const MediaBarSlideItem({
+    required this.itemId,
+    required this.serverId,
+    required this.title,
+    this.overview,
+    this.backdropUrl,
+    this.bannerUrl,
+    this.logoUrl,
+    this.posterUrl,
+    this.officialRating,
+    this.year,
+    this.genres = const [],
+    this.runtime,
+    this.communityRating,
+    this.criticRating,
+    this.tmdbId,
+    this.imdbId,
+    this.itemType = 'Movie',
+    this.remoteTrailers = const [],
+    this.newRelease,
+    this.childCount,
+    this.isFavorite = false,
+  });
+
+  /// Whether this title came from an outside list rather than the server, so it
+  /// opens in Seerr and has nothing to play.
+  bool get isExternal => serverId == externalServerId;
+
+  /// The same title with [release] as its banner.
+  MediaBarSlideItem withNewRelease(MediaBarNewReleaseInfo? release) =>
+      _copy(newRelease: release);
+
+  /// The same title with its description dropped, for previews of the
+  /// settings that hide it.
+  MediaBarSlideItem withoutOverview() => _copy(dropOverview: true);
+
+  MediaBarSlideItem _copy({
+    Object? newRelease = _keep,
+    bool dropOverview = false,
+  }) => MediaBarSlideItem(
+    itemId: itemId,
+    serverId: serverId,
+    title: title,
+    overview: dropOverview ? null : overview,
+    backdropUrl: backdropUrl,
+    bannerUrl: bannerUrl,
+    logoUrl: logoUrl,
+    posterUrl: posterUrl,
+    officialRating: officialRating,
+    year: year,
+    genres: genres,
+    runtime: runtime,
+    communityRating: communityRating,
+    criticRating: criticRating,
+    tmdbId: tmdbId,
+    imdbId: imdbId,
+    itemType: itemType,
+    remoteTrailers: remoteTrailers,
+    newRelease: identical(newRelease, _keep)
+        ? this.newRelease
+        : newRelease as MediaBarNewReleaseInfo?,
+    childCount: childCount,
+    isFavorite: isFavorite,
+  );
+
+  static const _keep = Object();
+}

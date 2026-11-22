@@ -1,0 +1,1561 @@
+import 'package:flutter/cupertino.dart' show CupertinoSlider;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:get_it/get_it.dart';
+import 'package:moonfin_design/moonfin_design.dart';
+import 'package:jellyfin_preference/jellyfin_preference.dart';
+
+import '../../../preference/user_preferences.dart';
+import '../../../util/idiom/app_ui_idiom.dart';
+import '../../../util/platform_detection.dart';
+import '../../../util/focus/dpad_keys.dart';
+import '../../../util/focus/input_mode_tracker.dart';
+import '../adaptive/adaptive_icons.dart';
+import '../adaptive/sf_symbol.dart';
+import '../overlay_sheet.dart';
+import 'multi_select_dialog.dart';
+import 'preference_binding.dart';
+import 'settings_preview_scope.dart';
+
+Widget withBackClose(BuildContext dialogContext, Widget child) {
+  final closeDialog = createDialogBackCloseHandler(dialogContext);
+
+  return Shortcuts(
+    shortcuts: const <ShortcutActivator, Intent>{
+      SingleActivator(LogicalKeyboardKey.escape): DismissIntent(),
+      SingleActivator(LogicalKeyboardKey.goBack): DismissIntent(),
+      SingleActivator(LogicalKeyboardKey.browserBack): DismissIntent(),
+      SingleActivator(LogicalKeyboardKey.gameButtonB): DismissIntent(),
+    },
+    child: Actions(
+      actions: <Type, Action<Intent>>{
+        DismissIntent: CallbackAction<DismissIntent>(
+          onInvoke: (_) {
+            closeDialog();
+            return null;
+          },
+        ),
+      },
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (_, event) {
+          if (!event.logicalKey.isBackKey) return KeyEventResult.ignored;
+          if (event is KeyDownEvent || event is KeyUpEvent) {
+            closeDialog();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: FocusScope(autofocus: true, child: child),
+      ),
+    ),
+  );
+}
+
+const TextStyle _kSettingsTitleTextStyle = TextStyle(
+  fontSize: 14,
+  fontWeight: FontWeight.w600,
+);
+const TextStyle _kSettingsSubtitleTextStyle = TextStyle(fontSize: 12);
+const TextStyle _kSettingsDescriptionTextStyle = TextStyle(fontSize: 11);
+const double _kSettingsTileRadius = 16;
+const double _kSettingsIconShellSize = 44;
+const EdgeInsets _kSettingsTileContentPadding = EdgeInsets.symmetric(
+  horizontal: 16,
+  vertical: 8,
+);
+
+Widget buildSettingsLeadingIconShell(
+  BuildContext context, {
+  required Widget icon,
+  required bool focused,
+  required Color iconColor,
+}) {
+  if (AppUiIdiomResolver.isApple) {
+    final glyph = icon is Icon ? icon.icon : null;
+    final base = glyph != null
+        ? appleSettingsIconColor(glyph)
+        : AppColorScheme.accent;
+    return Container(
+      width: _kSettingsIconShellSize,
+      height: _kSettingsIconShellSize,
+      decoration: BoxDecoration(
+        color: Color.lerp(base, const Color(0xFF1C1C1E), 0.4),
+        borderRadius: AppRadius.circular(8),
+      ),
+      child: Center(
+        child: glyph != null
+            ? SfSymbol(material: glyph, size: 18, color: Colors.white)
+            : IconTheme(
+                data: const IconThemeData(size: 18, color: Colors.white),
+                child: icon,
+              ),
+      ),
+    );
+  }
+  if (AppUiIdiomResolver.appleTvStyle) {
+    final glyph = icon is Icon ? icon.icon : null;
+    final tint = focused
+        ? Colors.white
+        : AppColorScheme.onSurface.withValues(alpha: 0.6);
+    return SizedBox(
+      width: _kSettingsIconShellSize,
+      height: _kSettingsIconShellSize,
+      child: Center(
+        child: glyph != null
+            ? SfSymbol(material: glyph, size: 24, color: tint)
+            : IconTheme(
+                data: IconThemeData(size: 24, color: tint),
+                child: icon,
+              ),
+      ),
+    );
+  }
+  final borderTokens = ThemeRegistry.active.borders;
+  final glyph = icon is Icon ? icon.icon : null;
+  final leadingChild = PlatformDetection.isAppleTV && glyph != null
+      ? SfSymbol(material: glyph, size: 22, color: iconColor)
+      : IconTheme(
+          data: IconThemeData(size: 22, color: iconColor),
+          child: icon,
+        );
+  return Container(
+    width: _kSettingsIconShellSize,
+    height: _kSettingsIconShellSize,
+    decoration: BoxDecoration(
+      color: AppColorScheme.accent.withValues(alpha: focused ? 0.22 : 0.14),
+      borderRadius: AppRadius.circular(14),
+      border: Border.fromBorderSide(
+        borderTokens.chipBorder.copyWith(
+          color: AppColorScheme.accent.withValues(alpha: focused ? 0.64 : 0.42),
+          width: 1,
+        ),
+      ),
+    ),
+    child: Center(child: leadingChild),
+  );
+}
+
+Color settingsHeadlineColor() =>
+    AppUiIdiomResolver.appleTvStyle && AppColorScheme.isNeonPulse
+    ? AppColorScheme.accent
+    : AppColorScheme.onSurface;
+
+EdgeInsets _settingsTileOuterPadding(BuildContext context) {
+  if (AppUiIdiomResolver.isApple) {
+    return EdgeInsets.zero;
+  }
+  final inDialog =
+      context.findAncestorWidgetOfExactType<SimpleDialog>() != null ||
+      context.findAncestorWidgetOfExactType<AlertDialog>() != null;
+  if (inDialog) {
+    return const EdgeInsets.symmetric(vertical: 2);
+  }
+  return const EdgeInsets.fromLTRB(12, 4, 12, 4);
+}
+
+/// Focused settings surfaces invert their content to dark only when
+/// [_settingsTileDecoration] fills with the solid light buttonFocused color.
+/// The Apple and leanback styles use translucent or dark fills, so content
+/// must stay light there.
+bool get settingsTileInvertsOnFocus =>
+    !AppUiIdiomResolver.isApple && !AppUiIdiomResolver.appleTvStyle;
+
+BoxDecoration _settingsTileDecoration(
+  BuildContext context, {
+  required bool focused,
+}) {
+  if (AppUiIdiomResolver.isApple) {
+    if (!focused) return const BoxDecoration();
+    return BoxDecoration(
+      color: AppColorScheme.buttonFocused.withValues(alpha: 0.14),
+      borderRadius: AppRadius.circular(8),
+      border: Border.all(
+        color: AppColorScheme.accent.withValues(alpha: 0.9),
+        width: 1,
+      ),
+    );
+  }
+  if (AppUiIdiomResolver.appleTvStyle) {
+    if (!focused) return const BoxDecoration();
+    return BoxDecoration(
+      color: AppColorScheme.isNeonPulse
+          ? AppColorScheme.accent.withValues(alpha: 0.38)
+          : AppColorScheme.surfaceVariant,
+      borderRadius: AppRadius.circular(12),
+    );
+  }
+  final colorScheme = Theme.of(context).colorScheme;
+  final borderTokens = ThemeRegistry.active.borders;
+  final baseBorder = borderTokens.cardBorder.color;
+  final unfocusedBorderColor = baseBorder.a == 0
+      ? AppColorScheme.onSurface.withValues(alpha: 0.16)
+      : baseBorder.withValues(alpha: 0.55);
+
+  return BoxDecoration(
+    color: focused
+        ? AppColorScheme.buttonFocused
+        : colorScheme.surfaceContainerLow.withValues(alpha: 0.82),
+    borderRadius: AppRadius.circular(_kSettingsTileRadius),
+    border: Border.fromBorderSide(
+      (focused ? borderTokens.focusBorder : borderTokens.cardBorder).copyWith(
+        color: focused
+            ? AppColorScheme.accent.withValues(alpha: 0.72)
+            : unfocusedBorderColor,
+        width: 1.0,
+      ),
+    ),
+    boxShadow: focused
+        ? (borderTokens.focusGlow.isNotEmpty
+              ? borderTokens.focusGlow
+              : [
+                  BoxShadow(
+                    color: AppColorScheme.accent.withValues(alpha: 0.22),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                  ),
+                ])
+        : null,
+  );
+}
+
+Widget buildSettingsSelectionBubble(
+  BuildContext context,
+  String label,
+  bool focused,
+) {
+  final theme = Theme.of(context);
+  final colorScheme = theme.colorScheme;
+  final invert = focused && settingsTileInvertsOnFocus;
+  // ListTile hands its trailing whatever width it asks for and leaves the
+  // title the rest, so an uncapped long label crushes the title to a sliver.
+  final maxBubbleWidth = (MediaQuery.sizeOf(context).width * 0.42).clamp(
+    120.0,
+    280.0,
+  );
+  return Container(
+    constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    decoration: BoxDecoration(
+      color: invert
+          ? AppColors.black.withValues(alpha: 0.12)
+          : colorScheme.primary.withValues(alpha: 0.1),
+      borderRadius: AppRadius.circular(12),
+      border: Border.all(
+        color: invert
+            ? AppColors.black.withValues(alpha: 0.35)
+            : colorScheme.primary.withValues(alpha: 0.35),
+        width: 1,
+      ),
+    ),
+    child: Text(
+      label,
+      textAlign: TextAlign.center,
+      maxLines: 3,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.labelMedium?.copyWith(
+        color: invert
+            ? AppColors.black.withValues(alpha: 0.87)
+            : colorScheme.primary,
+        fontWeight: FontWeight.w600,
+        fontSize: 11,
+      ),
+    ),
+  );
+}
+
+void ensureSettingsTileVisible(
+  BuildContext context, {
+  double alignment = 0.9,
+}) {
+  // Only a D-pad or keyboard scrolls here. On touch, autofocus fires again
+  // whenever a lazy list rebuilds the tile and would pull the list back to it.
+  if (FocusManager.instance.highlightMode != FocusHighlightMode.traditional) {
+    return;
+  }
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    Scrollable.ensureVisible(
+      context,
+      alignment: alignment,
+      alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
+      duration: const Duration(milliseconds: 120),
+      curve: Curves.easeOut,
+    );
+  });
+}
+
+class SettingsListTypography extends StatelessWidget {
+  final Widget child;
+
+  const SettingsListTypography({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        focusColor: Colors.transparent,
+        hoverColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+        splashColor: Colors.transparent,
+      ),
+      child: ListTileTheme(
+        data: ListTileTheme.of(context).copyWith(
+          tileColor: Colors.transparent,
+          selectedTileColor: Colors.transparent,
+          titleTextStyle:
+              theme.textTheme.bodyMedium?.merge(_kSettingsTitleTextStyle) ??
+              _kSettingsTitleTextStyle,
+          subtitleTextStyle:
+              theme.textTheme.bodySmall?.merge(_kSettingsSubtitleTextStyle) ??
+              _kSettingsSubtitleTextStyle,
+          contentPadding: _kSettingsTileContentPadding,
+          minLeadingWidth: _kSettingsIconShellSize,
+          horizontalTitleGap: 14,
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
+PreferenceBinding<T> _rebindOnPreferenceChange<T>(
+  PreferenceBinding<T> current,
+  Preference<T> next,
+  Preference<T> previous,
+) {
+  if (next == previous) return current;
+  current.dispose();
+  return PreferenceBinding(GetIt.instance<PreferenceStore>(), next);
+}
+
+class SwitchPreferenceTile extends StatefulWidget {
+  final Preference<bool> preference;
+  final String title;
+  final String? subtitle;
+  final IconData? icon;
+  final Widget Function(double size, Color color)? iconBuilder;
+  final VoidCallback? onChanged;
+  final ValueChanged<bool>? onChangedValue;
+
+  final bool inverted;
+  final bool enabled;
+  final FocusNode? focusNode;
+
+  const SwitchPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    this.subtitle,
+    this.icon,
+    this.iconBuilder,
+    this.onChanged,
+    this.onChangedValue,
+    this.inverted = false,
+    this.enabled = true,
+    this.focusNode,
+  });
+
+  @override
+  State<SwitchPreferenceTile> createState() => _SwitchPreferenceTileState();
+}
+
+class _SwitchPreferenceTileState extends State<SwitchPreferenceTile> {
+  late PreferenceBinding<bool> _binding;
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant SwitchPreferenceTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+  }
+
+  @override
+  void dispose() {
+    _binding.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsPreviewReporter(
+      describe: () => SettingsPreviewEntry(
+        prefKey: widget.preference.key,
+        title: widget.title,
+        description: widget.subtitle,
+      ),
+      child: _buildTile(context),
+    );
+  }
+
+  Widget _buildTile(BuildContext context) {
+    return TvFocusHighlight(
+      enabled: widget.enabled,
+      builder: (context, focused) {
+        final iconColor = focused && settingsTileInvertsOnFocus
+            ? AppColors.black.withValues(alpha: 0.54)
+            : (Theme.of(context).iconTheme.color ?? AppColorScheme.onSurface);
+        final secondary = widget.iconBuilder != null
+            ? buildSettingsLeadingIconShell(
+                context,
+                icon: widget.iconBuilder!(24, iconColor),
+                focused: focused,
+                iconColor: iconColor,
+              )
+            : widget.icon != null
+            ? buildSettingsLeadingIconShell(
+                context,
+                icon: Icon(widget.icon),
+                focused: focused,
+                iconColor: iconColor,
+              )
+            : null;
+
+        return ValueListenableBuilder<bool>(
+          valueListenable: _binding,
+          builder: (context, value, _) => SwitchListTile.adaptive(
+            focusNode: widget.focusNode,
+            secondary: secondary,
+            title: Text(widget.title, style: _kSettingsTitleTextStyle),
+            subtitle: widget.subtitle != null
+                ? Text(widget.subtitle!, style: _kSettingsSubtitleTextStyle)
+                : null,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            value: widget.inverted ? !value : value,
+            onChanged: widget.enabled
+                ? (v) {
+                    final targetValue = widget.inverted ? !v : v;
+                    _binding.value = targetValue;
+                    widget.onChanged?.call();
+                    widget.onChangedValue?.call(targetValue);
+                  }
+                : null,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class EnumPreferenceTile<T extends Enum> extends StatefulWidget {
+  final EnumPreference<T> preference;
+  final String title;
+  final String? description;
+  final IconData? icon;
+  final String Function(T value) labelOf;
+  final String Function(T value)? dialogLabelOf;
+  final String Function(T value)? dialogSubtitleOf;
+  final VoidCallback? onChanged;
+  final ValueChanged<T>? onChangedValue;
+  final List<T>? values;
+  final bool autofocus;
+  final bool enabled;
+  final FocusNode? focusNode;
+
+  const EnumPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    required this.labelOf,
+    this.dialogLabelOf,
+    this.dialogSubtitleOf,
+    this.description,
+    this.icon,
+    this.onChanged,
+    this.onChangedValue,
+    this.values,
+    this.autofocus = false,
+    this.enabled = true,
+    this.focusNode,
+  });
+
+  @override
+  State<EnumPreferenceTile<T>> createState() => _EnumPreferenceTileState<T>();
+}
+
+class _EnumPreferenceTileState<T extends Enum>
+    extends State<EnumPreferenceTile<T>> {
+  late PreferenceBinding<T> _binding;
+  FocusNode? _internalFocusNode;
+  FocusNode get _effectiveFocusNode =>
+      widget.focusNode ??
+      (_internalFocusNode ??= FocusNode(
+        debugLabel: 'EnumPreferenceTile_${widget.preference.key}',
+      ));
+  bool _pickerOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant EnumPreferenceTile<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+  }
+
+  @override
+  void dispose() {
+    _internalFocusNode?.dispose();
+    _binding.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final values = widget.values ?? widget.preference.values.toList();
+    return SettingsPreviewReporter(
+      describe: () => SettingsPreviewEntry(
+        prefKey: widget.preference.key,
+        title: widget.title,
+        description: widget.description,
+        options: [for (final v in values) widget.labelOf(v)],
+        // A value the tile no longer offers reads as its first option.
+        currentIndex: () => values.contains(_binding.value)
+            ? values.indexOf(_binding.value)
+            : 0,
+      ),
+      child: _buildTile(context, values),
+    );
+  }
+
+  Widget _buildTile(BuildContext context, List<T> values) {
+    return TvFocusHighlight(
+      enabled: widget.enabled,
+      builder: (context, focused) => ValueListenableBuilder<T>(
+        valueListenable: _binding,
+        builder: (context, value, _) {
+          final current = values.contains(value) ? value : values.first;
+          final label = widget.labelOf(current);
+          return ListTile(
+            enabled: widget.enabled,
+            focusNode: _effectiveFocusNode,
+            autofocus: widget.autofocus,
+            leading: widget.icon != null
+                ? buildSettingsLeadingIconShell(
+                    context,
+                    icon: Icon(widget.icon),
+                    focused: focused,
+                    iconColor: focused && settingsTileInvertsOnFocus
+                        ? AppColors.black.withValues(alpha: 0.54)
+                        : AppColorScheme.onSurface.withValues(alpha: 0.78),
+                  )
+                : null,
+            title: Text(widget.title, style: _kSettingsTitleTextStyle),
+            trailing: buildSettingsSelectionBubble(context, label, focused),
+            subtitle: widget.description != null
+                ? Text(
+                    widget.description!,
+                    style: _kSettingsDescriptionTextStyle,
+                  )
+                : null,
+            isThreeLine: widget.description != null,
+            titleAlignment: ListTileTitleAlignment.center,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            onTap: widget.enabled ? () => _showPicker(context, current) : null,
+          );
+        },
+      ),
+    );
+  }
+
+  void _showPicker(BuildContext context, T current) async {
+    if (_pickerOpen) return;
+    _pickerOpen = true;
+    final preview = SettingsPreviewScope.maybeOf(context);
+    final key = widget.preference.key;
+    final result = await showSettingsPicker<T>(
+      context,
+      title: widget.title,
+      values: widget.values ?? widget.preference.values.toList(),
+      current: current,
+      labelOf: widget.dialogLabelOf ?? widget.labelOf,
+      subtitleOf: widget.dialogSubtitleOf,
+      onTry: preview == null
+          ? null
+          : (value, index) => preview.tryValue(key, value, index: index),
+    );
+    preview?.clearTry(key);
+    _pickerOpen = false;
+    if (!mounted || result == null || result == _binding.value) return;
+    _binding.value = result;
+    widget.onChanged?.call();
+    widget.onChangedValue?.call(result);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          !_effectiveFocusNode.hasFocus &&
+          (ModalRoute.of(context)?.isCurrent ?? true)) {
+        _effectiveFocusNode.requestFocus();
+      }
+    });
+  }
+}
+
+/// The list a settings picker opens: every value, the current one ticked, and
+/// an optional line under each. Resolves to the value pressed, or null when
+/// the dialog is closed without a choice.
+Future<T?> showSettingsPicker<T>(
+  BuildContext context, {
+  required String title,
+  required List<T> values,
+  required T current,
+  required String Function(T value) labelOf,
+  String? Function(T value)? subtitleOf,
+  Widget Function(T value)? leadingOf,
+  void Function(T value, int index)? onTry,
+}) {
+  final selectedIndex = values.indexOf(current);
+  final autofocusIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  var picked = false;
+  return showFocusRestoringDialog<T>(
+    context: context,
+    useRootNavigator: false,
+    builder: (ctx) => withBackClose(
+      ctx,
+      SettingsPickerDialog(
+        title: title,
+        children: values.asMap().entries.map((entry) {
+          final i = entry.key;
+          final v = entry.value;
+          return settingsPreviewOption(
+            onTry: onTry == null ? null : () => onTry(v, i),
+            child: SettingsPickerOption(
+              label: labelOf(v),
+              subtitle: subtitleOf?.call(v),
+              leading: leadingOf?.call(v),
+              selected: v == current,
+              autofocus: i == autofocusIndex,
+              onTap: () {
+                if (picked) return;
+                picked = true;
+                Navigator.pop(ctx, v);
+              },
+            ),
+          );
+        }).toList(),
+      ),
+    ),
+  );
+}
+
+/// The glass theme's dialog is see-through, and borderless rows can't hide what's
+/// behind it, so pickers draw the theme's dialog color opaque.
+Color? settingsPickerBackground(BuildContext context) =>
+    Theme.of(context).dialogTheme.backgroundColor?.withValues(alpha: 1);
+
+class SettingsPickerDialog extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+
+  const SettingsPickerDialog({
+    super.key,
+    required this.title,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SimpleDialog(
+      backgroundColor: settingsPickerBackground(context),
+      titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
+      contentPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      title: Text(
+        title,
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+      ),
+      children: children,
+    );
+  }
+}
+
+/// The Apple idioms mark the current value with a trailing check like their
+/// native lists, so they get no radio.
+class SettingsPickerOption extends StatelessWidget {
+  final String label;
+  final String? subtitle;
+  final Widget? leading;
+  final bool selected;
+  final bool autofocus;
+  final VoidCallback onTap;
+
+  const SettingsPickerOption({
+    super.key,
+    required this.label,
+    this.subtitle,
+    this.leading,
+    required this.selected,
+    this.autofocus = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final appleCheck =
+        AppUiIdiomResolver.isApple || AppUiIdiomResolver.appleTvStyle;
+    return Semantics(
+      inMutuallyExclusiveGroup: true,
+      checked: selected,
+      child: TvFocusHighlight(
+        quiet: true,
+        builder: (_, focused) {
+          final invert = focused && settingsTileInvertsOnFocus;
+          final ink = invert
+              ? AppColors.black.withValues(alpha: 0.87)
+              : AppColorScheme.onSurface;
+          final leadingParts = [
+            if (!appleCheck) _PickerRadio(selected: selected, invert: invert),
+            ?leading,
+          ];
+          return ListTile(
+            autofocus: autofocus,
+            focusColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+            minVerticalPadding: 12,
+            minLeadingWidth: 0,
+            horizontalTitleGap: 14,
+            leading: leadingParts.isEmpty
+                ? null
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    spacing: 14,
+                    children: leadingParts,
+                  ),
+            title: Text(
+              label,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: ink,
+              ),
+            ),
+            subtitle: subtitle == null
+                ? null
+                : Text(
+                    subtitle!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: ink.withValues(alpha: invert ? 0.6 : 0.65),
+                    ),
+                  ),
+            trailing: appleCheck && selected
+                ? Icon(Icons.check, color: AppColorScheme.accent)
+                : null,
+            onTap: onTap,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PickerRadio extends StatelessWidget {
+  final bool selected;
+  final bool invert;
+
+  const _PickerRadio({required this.selected, required this.invert});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = invert
+        ? AppColors.black.withValues(alpha: selected ? 0.87 : 0.5)
+        : selected
+        ? AppColorScheme.accent
+        : AppColorScheme.onSurface.withValues(alpha: 0.45);
+    return Container(
+      width: 18,
+      height: 18,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: color, width: 2),
+      ),
+      child: selected
+          ? Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            )
+          : null,
+    );
+  }
+}
+
+class SliderPreferenceTile extends StatefulWidget {
+  final Preference<int> preference;
+  final String title;
+  final String? description;
+  final IconData? icon;
+  final double min;
+  final double max;
+  final int? divisions;
+  final String Function(int value)? labelOf;
+  final VoidCallback? onChangeEnd;
+  final bool autofocus;
+  final bool enabled;
+
+  const SliderPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    this.description,
+    this.icon,
+    required this.min,
+    required this.max,
+    this.divisions,
+    this.labelOf,
+    this.onChangeEnd,
+    this.autofocus = false,
+    this.enabled = true,
+  });
+
+  @override
+  State<SliderPreferenceTile> createState() => _SliderPreferenceTileState();
+}
+
+class _SliderPreferenceTileState extends State<SliderPreferenceTile> {
+  late PreferenceBinding<int> _binding;
+  late final FocusNode _outerFocusNode;
+  late final FocusNode _sliderInternalNode;
+  bool _outerFocused = false;
+
+  int get _step {
+    if (widget.divisions != null && widget.divisions! > 0) {
+      final s = ((widget.max - widget.min) / widget.divisions!).round();
+      return s < 1 ? 1 : s;
+    }
+    return 1;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+    _outerFocusNode = FocusNode(debugLabel: 'SliderPrefTileOuter');
+    _sliderInternalNode = FocusNode(
+      debugLabel: 'SliderPrefTileInner',
+      canRequestFocus: false,
+      skipTraversal: true,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant SliderPreferenceTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+  }
+
+  @override
+  void dispose() {
+    _outerFocusNode.dispose();
+    _sliderInternalNode.dispose();
+    _binding.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (!widget.enabled) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      node.previousFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      node.nextFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      final delta = key == LogicalKeyboardKey.arrowLeft ? -_step : _step;
+      final current = _binding.value;
+      final next = (current + delta).clamp(
+        widget.min.round(),
+        widget.max.round(),
+      );
+      if (next != current) {
+        _binding.value = next;
+        widget.onChangeEnd?.call();
+      }
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final invert =
+        widget.enabled && _outerFocused && settingsTileInvertsOnFocus;
+    return SettingsPreviewReporter(
+      describe: () => SettingsPreviewEntry(
+        prefKey: widget.preference.key,
+        title: widget.title,
+        description: widget.description,
+      ),
+      child: Opacity(
+        opacity: widget.enabled ? 1.0 : 0.4,
+        child: _buildTile(context, invert: invert),
+      ),
+    );
+  }
+
+  Widget _buildTile(BuildContext context, {required bool invert}) {
+    return Focus(
+      focusNode: _outerFocusNode,
+      autofocus: widget.autofocus,
+      canRequestFocus: widget.enabled,
+      onKeyEvent: _onKeyEvent,
+      onFocusChange: (focused) {
+        if (focused) {
+          ensureSettingsTileVisible(context);
+        }
+        if (_outerFocused != focused && mounted) {
+          setState(() => _outerFocused = focused);
+        }
+      },
+      child: Padding(
+        padding: _settingsTileOuterPadding(context),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 90),
+          curve: Curves.easeOut,
+          decoration: _settingsTileDecoration(context, focused: _outerFocused),
+          child: ListTileTheme.merge(
+            textColor: invert
+                ? AppColors.black.withValues(alpha: 0.87)
+                : AppColorScheme.onSurface,
+            iconColor: invert
+                ? AppColors.black.withValues(alpha: 0.54)
+                : AppColorScheme.onSurface.withValues(alpha: 0.7),
+            titleTextStyle: _kSettingsTitleTextStyle,
+            subtitleTextStyle: _kSettingsSubtitleTextStyle,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _binding,
+              builder: (context, value, _) => ListTile(
+                leading: widget.icon != null
+                    ? buildSettingsLeadingIconShell(
+                        context,
+                        icon: Icon(widget.icon),
+                        focused: _outerFocused,
+                        iconColor: invert
+                            ? AppColors.black.withValues(alpha: 0.54)
+                            : AppColorScheme.onSurface.withValues(alpha: 0.78),
+                      )
+                    : null,
+                title: Text(widget.title, style: _kSettingsTitleTextStyle),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (widget.description != null)
+                      Text(
+                        widget.description!,
+                        style: TextStyle(
+                          fontSize: _kSettingsSubtitleTextStyle.fontSize,
+                          color: invert
+                              ? AppColors.black.withValues(alpha: 0.54)
+                              : AppColorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    if (widget.labelOf != null)
+                      Text(
+                        widget.labelOf!(value),
+                        style: TextStyle(
+                          fontSize: _kSettingsSubtitleTextStyle.fontSize,
+                          color: invert
+                              ? AppColors.black.withValues(alpha: 0.54)
+                              : AppColorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    AppUiIdiomResolver.isApple
+                        ? CupertinoSlider(
+                            value: value.toDouble().clamp(
+                              widget.min,
+                              widget.max,
+                            ),
+                            min: widget.min,
+                            max: widget.max,
+                            divisions: widget.divisions,
+                            onChanged: widget.enabled
+                                ? (v) => _binding.value = v.round()
+                                : null,
+                            onChangeEnd: widget.enabled
+                                ? (_) => widget.onChangeEnd?.call()
+                                : null,
+                          )
+                        : Slider(
+                            focusNode: _sliderInternalNode,
+                            value: value.toDouble().clamp(
+                              widget.min,
+                              widget.max,
+                            ),
+                            min: widget.min,
+                            max: widget.max,
+                            divisions: widget.divisions,
+                            label:
+                                widget.labelOf?.call(value) ?? value.toString(),
+                            onChanged: widget.enabled
+                                ? (v) => _binding.value = v.round()
+                                : null,
+                            onChangeEnd: widget.enabled
+                                ? (_) => widget.onChangeEnd?.call()
+                                : null,
+                          ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class StringPickerPreferenceTile extends StatefulWidget {
+  final Preference<String> preference;
+  final String title;
+  final String? description;
+  final IconData? icon;
+  final Map<String, String> options;
+  final VoidCallback? onChanged;
+
+  const StringPickerPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    this.description,
+    this.icon,
+    required this.options,
+    this.onChanged,
+  });
+
+  @override
+  State<StringPickerPreferenceTile> createState() =>
+      _StringPickerPreferenceTileState();
+}
+
+class _StringPickerPreferenceTileState
+    extends State<StringPickerPreferenceTile> {
+  late PreferenceBinding<String> _binding;
+  bool _pickerOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant StringPickerPreferenceTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+    // Several tiles can write one preference (the media segment actions),
+    // so re-read it when a sibling changed it rather than keep the value
+    // read in initState.
+    if (_binding.value !=
+        GetIt.instance<UserPreferences>().get(widget.preference)) {
+      _binding.dispose();
+      _binding = PreferenceBinding(
+        GetIt.instance<PreferenceStore>(),
+        widget.preference,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _binding.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsPreviewReporter(
+      describe: () => SettingsPreviewEntry(
+        prefKey: widget.preference.key,
+        title: widget.title,
+        description: widget.description,
+        options: widget.options.values.toList(),
+        currentIndex: () =>
+            widget.options.keys.toList().indexOf(_binding.value),
+      ),
+      child: _buildTile(context),
+    );
+  }
+
+  Widget _buildTile(BuildContext context) {
+    return TvFocusHighlight(
+      builder: (context, focused) => ValueListenableBuilder<String>(
+        valueListenable: _binding,
+        builder: (context, value, _) {
+          final label = widget.options[value] ?? value;
+          return ListTile(
+            leading: widget.icon != null
+                ? buildSettingsLeadingIconShell(
+                    context,
+                    icon: Icon(widget.icon),
+                    focused: focused,
+                    iconColor: focused && settingsTileInvertsOnFocus
+                        ? AppColors.black.withValues(alpha: 0.54)
+                        : AppColorScheme.onSurface.withValues(alpha: 0.78),
+                  )
+                : null,
+            title: Text(widget.title, style: _kSettingsTitleTextStyle),
+            trailing: buildSettingsSelectionBubble(context, label, focused),
+            subtitle: widget.description != null
+                ? Text(
+                    widget.description!,
+                    style: _kSettingsDescriptionTextStyle,
+                  )
+                : null,
+            isThreeLine: widget.description != null,
+            titleAlignment: ListTileTitleAlignment.center,
+            onTap: () => _showPicker(context, value),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showPicker(BuildContext context, String current) async {
+    if (_pickerOpen) return;
+    _pickerOpen = true;
+    final preview = SettingsPreviewScope.maybeOf(context);
+    final key = widget.preference.key;
+    final result = await showSettingsPicker<String>(
+      context,
+      title: widget.title,
+      values: widget.options.keys.toList(),
+      current: current,
+      labelOf: (v) => widget.options[v]!,
+      onTry: preview == null
+          ? null
+          : (value, index) => preview.tryValue(key, value, index: index),
+    );
+    preview?.clearTry(key);
+    _pickerOpen = false;
+    if (!mounted || result == null) return;
+    if (result != _binding.value) {
+      _binding.value = result;
+      widget.onChanged?.call();
+    }
+  }
+}
+
+/// A preference holding a comma separated list of [options] keys, stored in the
+/// order they were picked. Shows [emptyLabel] while nothing is picked.
+class MultiSelectPreferenceTile extends StatefulWidget {
+  final Preference<String> preference;
+  final String title;
+  final String? description;
+  final IconData? icon;
+  final Map<String, String> options;
+  final String emptyLabel;
+  final int? maxSelected;
+
+  const MultiSelectPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    this.description,
+    this.icon,
+    required this.options,
+    required this.emptyLabel,
+    this.maxSelected,
+  });
+
+  @override
+  State<MultiSelectPreferenceTile> createState() =>
+      _MultiSelectPreferenceTileState();
+}
+
+class _MultiSelectPreferenceTileState extends State<MultiSelectPreferenceTile> {
+  late PreferenceBinding<String> _binding;
+  bool _pickerOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant MultiSelectPreferenceTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+  }
+
+  @override
+  void dispose() {
+    _binding.dispose();
+    super.dispose();
+  }
+
+  List<String> _picked(String value) => value
+      .split(',')
+      .map((key) => key.trim())
+      .where(widget.options.containsKey)
+      .toList();
+
+  @override
+  Widget build(BuildContext context) {
+    return TvFocusHighlight(
+      builder: (context, focused) => ValueListenableBuilder<String>(
+        valueListenable: _binding,
+        builder: (context, value, _) {
+          final picked = _picked(value);
+          final label = picked.isEmpty
+              ? widget.emptyLabel
+              : picked.map((key) => widget.options[key]!).join(', ');
+          return ListTile(
+            leading: widget.icon != null
+                ? buildSettingsLeadingIconShell(
+                    context,
+                    icon: Icon(widget.icon),
+                    focused: focused,
+                    iconColor: focused && settingsTileInvertsOnFocus
+                        ? AppColors.black.withValues(alpha: 0.54)
+                        : AppColorScheme.onSurface.withValues(alpha: 0.78),
+                  )
+                : null,
+            title: Text(widget.title, style: _kSettingsTitleTextStyle),
+            trailing: buildSettingsSelectionBubble(context, label, focused),
+            subtitle: widget.description != null
+                ? Text(
+                    widget.description!,
+                    style: _kSettingsDescriptionTextStyle,
+                  )
+                : null,
+            isThreeLine: widget.description != null,
+            titleAlignment: ListTileTitleAlignment.center,
+            onTap: () => _showPicker(context, picked),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showPicker(BuildContext context, List<String> picked) async {
+    if (_pickerOpen) return;
+    _pickerOpen = true;
+    final result = await showMultiSelectDialog(
+      context: context,
+      title: widget.title,
+      items: widget.options,
+      selected: picked.toSet(),
+      sortByLabel: false,
+      maxSelected: widget.maxSelected,
+    );
+    _pickerOpen = false;
+    if (!mounted || result == null) return;
+    // Keeps what was picked before in its place and adds the new picks after.
+    final ordered = [
+      ...picked.where(result.contains),
+      ...result.where((key) => !picked.contains(key)),
+    ];
+    _binding.value = ordered.join(',');
+  }
+}
+
+class IntPickerPreferenceTile extends StatefulWidget {
+  final Preference<int> preference;
+  final String title;
+  final String? description;
+  final IconData? icon;
+  final Map<int, String> options;
+
+  /// Longer wording for the picker rows, where there is room to explain what
+  /// an option means. The chip falls back to [options] when absent.
+  final Map<int, String>? dialogOptions;
+  final VoidCallback? onChanged;
+
+  const IntPickerPreferenceTile({
+    super.key,
+    required this.preference,
+    required this.title,
+    required this.options,
+    this.dialogOptions,
+    this.description,
+    this.icon,
+    this.onChanged,
+  });
+
+  @override
+  State<IntPickerPreferenceTile> createState() =>
+      _IntPickerPreferenceTileState();
+}
+
+class _IntPickerPreferenceTileState extends State<IntPickerPreferenceTile> {
+  late PreferenceBinding<int> _binding;
+  bool _pickerOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _binding = PreferenceBinding(
+      GetIt.instance<PreferenceStore>(),
+      widget.preference,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant IntPickerPreferenceTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _binding = _rebindOnPreferenceChange(
+      _binding,
+      widget.preference,
+      oldWidget.preference,
+    );
+  }
+
+  @override
+  void dispose() {
+    _binding.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsPreviewReporter(
+      describe: () => SettingsPreviewEntry(
+        prefKey: widget.preference.key,
+        title: widget.title,
+        description: widget.description,
+        options: widget.options.values.toList(),
+        currentIndex: () =>
+            widget.options.keys.toList().indexOf(_binding.value),
+      ),
+      child: _buildTile(context),
+    );
+  }
+
+  Widget _buildTile(BuildContext context) {
+    return TvFocusHighlight(
+      builder: (context, focused) => ValueListenableBuilder<int>(
+        valueListenable: _binding,
+        builder: (context, value, _) {
+          final label = widget.options[value] ?? value.toString();
+          return ListTile(
+            leading: widget.icon != null
+                ? buildSettingsLeadingIconShell(
+                    context,
+                    icon: Icon(widget.icon),
+                    focused: focused,
+                    iconColor: focused && settingsTileInvertsOnFocus
+                        ? AppColors.black.withValues(alpha: 0.54)
+                        : AppColorScheme.onSurface.withValues(alpha: 0.78),
+                  )
+                : null,
+            title: Text(widget.title, style: _kSettingsTitleTextStyle),
+            trailing: buildSettingsSelectionBubble(context, label, focused),
+            subtitle: widget.description != null
+                ? Text(
+                    widget.description!,
+                    style: _kSettingsDescriptionTextStyle,
+                  )
+                : null,
+            isThreeLine: widget.description != null,
+            titleAlignment: ListTileTitleAlignment.center,
+            onTap: () => _showPicker(context, value),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showPicker(BuildContext context, int current) async {
+    if (_pickerOpen) return;
+    _pickerOpen = true;
+    final preview = SettingsPreviewScope.maybeOf(context);
+    final key = widget.preference.key;
+    final result = await showSettingsPicker<int>(
+      context,
+      title: widget.title,
+      values: widget.options.keys.toList(),
+      current: current,
+      labelOf: (v) => widget.dialogOptions?[v] ?? widget.options[v]!,
+      onTry: preview == null
+          ? null
+          : (value, index) => preview.tryValue(key, value, index: index),
+    );
+    preview?.clearTry(key);
+    _pickerOpen = false;
+    if (!mounted || result == null) return;
+    if (result != _binding.value) {
+      _binding.value = result;
+      widget.onChanged?.call();
+    }
+  }
+}
+
+class TvFocusHighlight extends StatefulWidget {
+  final Widget Function(BuildContext context, bool focused) builder;
+  final bool enabled;
+  final FocusNode? focusNode;
+
+  /// Replaces the default tile outer margin (see [_settingsTileOuterPadding]).
+  /// Panels that want edge-to-edge tile highlights pass a tighter EdgeInsets;
+  /// null keeps the shared settings margins.
+  final EdgeInsetsGeometry? outerPadding;
+
+  /// Draws nothing until focused and then a plain fill with no border or
+  /// glow, for rows inside a picker dialog.
+  final bool quiet;
+
+  const TvFocusHighlight({
+    super.key,
+    required this.builder,
+    this.enabled = true,
+    this.focusNode,
+    this.outerPadding,
+    this.quiet = false,
+  });
+
+  @override
+  State<TvFocusHighlight> createState() => _TvFocusHighlightState();
+}
+
+class _TvFocusHighlightState extends State<TvFocusHighlight> {
+  FocusNode? _internalFocusNode;
+  FocusNode get _effectiveFocusNode =>
+      widget.focusNode ??
+      (_internalFocusNode ??= FocusNode(debugLabel: 'TvFocusHighlightScope'));
+  bool _focused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focused = _effectiveFocusNode.hasFocus;
+  }
+
+  @override
+  void dispose() {
+    _internalFocusNode?.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChange(bool focused) {
+    setState(() => _focused = focused);
+    if (focused) {
+      ensureSettingsTileVisible(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Gate the tile highlight to keyboard/D-pad
+    final focusVisible = InputModeTracker.showFocusVisuals(context, _focused);
+    final highlighted = focusVisible && settingsTileInvertsOnFocus;
+    return Focus(
+      focusNode: _effectiveFocusNode,
+      canRequestFocus: false,
+      skipTraversal: true,
+      descendantsAreFocusable: widget.enabled,
+      onFocusChange: _onFocusChange,
+      child: Padding(
+        padding:
+            widget.outerPadding ??
+            (widget.quiet
+                ? const EdgeInsets.symmetric(vertical: 1)
+                : _settingsTileOuterPadding(context)),
+        child: Opacity(
+          opacity: widget.enabled ? 1.0 : 0.45,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 90),
+            curve: Curves.easeOut,
+            decoration: widget.quiet && settingsTileInvertsOnFocus
+                ? BoxDecoration(
+                    color: focusVisible ? AppColorScheme.buttonFocused : null,
+                    borderRadius: AppRadius.circular(12),
+                  )
+                : _settingsTileDecoration(context, focused: focusVisible),
+            child: ListTileTheme.merge(
+              textColor: highlighted
+                  ? AppColors.black.withValues(alpha: 0.87)
+                  : settingsHeadlineColor(),
+              iconColor: highlighted
+                  ? AppColors.black.withValues(alpha: 0.54)
+                  : AppColorScheme.onSurface.withValues(alpha: 0.7),
+              titleTextStyle: _kSettingsTitleTextStyle,
+              subtitleTextStyle: _kSettingsSubtitleTextStyle,
+              child: CheckboxTheme(
+                data: CheckboxThemeData(
+                  side: BorderSide(
+                    color: highlighted
+                        ? AppColors.black.withValues(alpha: 0.8)
+                        : (Theme.of(context).colorScheme.primary),
+                    width: 1.8,
+                  ),
+                  fillColor: WidgetStateProperty.resolveWith((states) {
+                    if (states.contains(WidgetState.selected)) {
+                      return highlighted
+                          ? AppColors.black.withValues(alpha: 0.87)
+                          : Theme.of(context).colorScheme.primary;
+                    }
+                    return Colors.transparent;
+                  }),
+                  checkColor: WidgetStateProperty.all(
+                    highlighted
+                        ? Colors.white
+                        : Theme.of(context).colorScheme.onPrimary,
+                  ),
+                ),
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Builder(
+                    builder: (ctx) => widget.builder(ctx, focusVisible),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

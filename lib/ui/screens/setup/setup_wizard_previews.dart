@@ -1,0 +1,5727 @@
+import 'dart:async';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:get_it/get_it.dart';
+import 'package:jellyfin_preference/jellyfin_preference.dart';
+import 'package:moonfin_design/moonfin_design.dart';
+import 'package:server_core/server_core.dart' hide ImageType;
+
+import '../../../auth/repositories/user_repository.dart';
+import '../../../data/models/aggregated_item.dart';
+import '../../../data/models/aggregated_library.dart';
+import '../../../data/models/media_bar_slide_item.dart';
+import '../../../data/models/media_bar_state.dart';
+import '../../../data/repositories/media_bar_repository.dart';
+import '../../../data/repositories/multi_server_repository.dart';
+import '../../../data/repositories/poster_badge_repository.dart';
+import '../../../data/repositories/user_views_repository.dart';
+import '../../../data/services/library_scope_service.dart';
+import '../../../data/services/plugin_sync_service.dart';
+import '../../../data/viewmodels/media_bar_view_model.dart';
+import '../../../l10n/app_localizations.dart';
+import '../../../preference/bottom_nav_tabs.dart';
+import '../../../preference/detail_metadata_layout.dart';
+import '../../../preference/preference_constants.dart';
+import '../../../preference/seerr_preferences.dart';
+import '../../../preference/user_preferences.dart';
+import '../../../util/clock_format.dart';
+import '../../../util/game_library.dart' show libraryIcon;
+import '../../../util/live_tv_library.dart'
+    show isLiveTvLibrary, librariesForNav;
+import '../../../util/overlay_color_palette.dart';
+import '../../../util/platform_detection.dart';
+import '../../../util/tv_ui_scale.dart';
+import '../../widgets/bottom_nav/bottom_nav_destinations.dart';
+import '../../widgets/bottom_nav/bottom_nav_metrics.dart';
+import '../../widgets/bottom_nav/bottom_nav_model.dart';
+import '../../widgets/bottom_nav/bottom_nav_tab.dart';
+import '../../widgets/bottom_nav/bottom_nav_theme.dart';
+import '../../widgets/bottom_nav/dock_bar.dart';
+import '../../widgets/bottom_nav/split_bar.dart';
+import '../../widgets/bottom_nav/strip_bar.dart';
+import '../../widgets/bounded_network_image.dart';
+import '../../widgets/carousel_panel.dart';
+import '../../widgets/downloads_nav_slot.dart';
+import '../../widgets/friends_nav_slot.dart';
+import '../../widgets/home_row_spacing.dart';
+import '../../widgets/info_area.dart';
+import '../../widgets/poster_badges.dart';
+import '../../widgets/mediabar/makd_classic.dart';
+import '../../widgets/mediabar/gallery_glow.dart';
+import '../../widgets/mediabar/media_bar_new_release_label.dart';
+import '../../widgets/modern_row.dart';
+import '../../widgets/rating_display.dart';
+import '../../widgets/seerr_icons.dart';
+import '../../widgets/settings/settings_preview_scope.dart';
+import '../../widgets/user_avatar_image.dart';
+import '../detail/detail_buttons.dart';
+import '../detail/detail_layout_metrics.dart';
+import '../detail/frost/frost_detail_content.dart' show frostStageSize;
+import '../home/home_backdrop.dart';
+
+/// The artwork behind every preview, shared with the home screen.
+///
+/// The wizard reads the same MediaBarViewModel singleton Home renders from, so
+/// the items in the previews are the items the real bar will open on, and the
+/// images are already cached by the time Home draws them for real.
+abstract final class SetupPreviewData {
+  /// Stands in for the view model in widget tests, where neither the
+  /// container nor a server exists.
+  @visibleForTesting
+  static ValueNotifier<List<MediaBarSlideItem>>? debugOverride;
+
+  static MediaBarViewModel? get _viewModel =>
+      GetIt.instance.isRegistered<MediaBarViewModel>()
+      ? GetIt.instance<MediaBarViewModel>()
+      : null;
+
+  /// Filled when the bar pipeline has settled on giving nothing. The bar can
+  /// refuse whole classes of server for good, mixed libraries carry no movies
+  /// or series collection type and some libraries have no backdrop artwork
+  /// at all, and the previews shouldn't inherit either refusal.
+  static final _fallbackItems = ValueNotifier<List<MediaBarSlideItem>>(
+    const [],
+  );
+
+  /// The user's libraries, read the way the real navbar reads them, for a
+  /// navbar that lists them one by one. Empty until they've loaded.
+  static final libraries = ValueNotifier<List<AggregatedLibrary>>(const []);
+
+  static Listenable? get listenable {
+    final override = debugOverride;
+    if (override != null) return Listenable.merge([override, libraries]);
+    final viewModel = _viewModel;
+    if (viewModel == null) return null;
+    return Listenable.merge([viewModel, _fallbackItems, libraries]);
+  }
+
+  static List<MediaBarSlideItem> get items {
+    final override = debugOverride;
+    if (override != null) return override.value;
+    final loaded = _viewModel?.items ?? const [];
+    return _drawn = keepDrawn(
+      _drawn,
+      loaded.isNotEmpty ? loaded : _fallbackItems.value,
+    );
+  }
+
+  /// The titles the previews last drew. A change to the bar's style or to what
+  /// it shows reloads it with a fresh random pick, and following that would
+  /// swap the sample under the person looking at it.
+  static List<MediaBarSlideItem> _drawn = const [];
+
+  /// [drawn] kept in its order, each title swapped for its newer copy when
+  /// [next] still has it, then topped up from [next] or cut to its count.
+  @visibleForTesting
+  static List<MediaBarSlideItem> keepDrawn(
+    List<MediaBarSlideItem> drawn,
+    List<MediaBarSlideItem> next,
+  ) {
+    if (drawn.isEmpty || next.isEmpty) return next;
+    final fresh = {
+      for (final item in next) (item.serverId, item.itemId): item,
+    };
+    return [
+      for (final item in drawn)
+        fresh.remove((item.serverId, item.itemId)) ?? item,
+      ...fresh.values,
+    ].take(next.length).toList();
+  }
+
+  static bool _loading = false;
+  static bool _loadingLibraries = false;
+
+  static Future<void> ensureLoaded() async {
+    // Each screen of previews starts from the bar's current titles, which
+    // also drops the last server's after a switch.
+    _drawn = const [];
+    if (debugOverride != null) return;
+    unawaited(loadLibraries());
+    if (_loading) return;
+    if (items.isNotEmpty) return;
+    final viewModel = _viewModel;
+    if (viewModel == null) return;
+
+    // The wizard runs seconds after the first sign-in, which is exactly when
+    // a first fetch can fail or come back empty, and load() treats any
+    // settled state as done and never runs again on its own. Without the
+    // forced retries a single early miss would leave every preview on the
+    // drawn stand-ins for the whole wizard.
+    _loading = true;
+    try {
+      const attempts = 4;
+      var delay = const Duration(seconds: 2);
+      for (var attempt = 0; attempt < attempts; attempt++) {
+        await viewModel.load(force: attempt > 0);
+        if (viewModel.items.isNotEmpty) return;
+        // Disabled is the pipeline's settled answer for this server, so the
+        // remaining retries would only repeat it.
+        if (viewModel.state is MediaBarDisabled) break;
+        if (attempt < attempts - 1) {
+          await Future<void>.delayed(delay);
+          delay *= 2;
+        }
+      }
+      if (GetIt.instance.isRegistered<MediaBarRepository>()) {
+        final fetched = await GetIt.instance<MediaBarRepository>()
+            .fetchPreviewItems();
+        if (fetched.isNotEmpty) _fallbackItems.value = fetched;
+      }
+    } finally {
+      _loading = false;
+    }
+  }
+
+  /// Whether the user's libraries include Live TV, the check the real navbar
+  /// makes before it shows its Live TV button. False until they've loaded.
+  static bool get hasLiveTv => libraries.value.any(isLiveTvLibrary);
+
+  /// Loads [libraries], for a screen that needs them with no preview up.
+  static Future<void> loadLibraries() async {
+    if (_loadingLibraries) return;
+    _loadingLibraries = true;
+    try {
+      final multiServer = GetIt.instance<UserPreferences>().get(
+        UserPreferences.enableMultiServerLibraries,
+      );
+      final loaded = multiServer
+          ? await GetIt.instance<MultiServerRepository>()
+                .getAggregatedLibraries()
+          : await GetIt.instance<UserViewsRepository>().getUserViews();
+      libraries.value = multiServer
+          ? await GetIt.instance<LibraryScopeService>().withoutHiddenLibraries(
+              loaded,
+            )
+          : loaded;
+    } catch (_) {
+      // The navbar's libraries keep their stand-ins without a server to ask.
+    } finally {
+      _loadingLibraries = false;
+    }
+  }
+}
+
+/// The aspect every preview card renders at, which is the screen it mocks.
+/// The wizard sizes mobile cards from the height with this, so a card never
+/// runs out of the step body.
+double setupPreviewAspect() => _designSize().aspectRatio;
+
+/// The logical size the previews lay their screen out at, for drawing more
+/// over one at the same scale.
+Size setupPreviewSize() => _designSize();
+
+/// Frame shared by every option card preview.
+class SetupPreview extends StatelessWidget {
+  const SetupPreview({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: AppRadius.circular(8),
+      child: ColoredBox(color: AppColorScheme.surface, child: child),
+    );
+  }
+}
+
+/// The logical size the preview screen is laid out at before being scaled
+/// down, matching a typical device of the interface the wizard runs in. Every
+/// measurement inside a preview is the real widget's measurement at this size,
+/// so the scaled result keeps the true proportions. A TV gets the canvas
+/// TvUiScale lays every panel out on.
+Size _designSize() {
+  if (PlatformDetection.useLeanbackUi) {
+    return tvUiLogicalSize(const Size(1920, 1080));
+  }
+  if (PlatformDetection.useMobileUi) return const Size(390, 844);
+  return const Size(1280, 800);
+}
+
+bool get _tv => PlatformDetection.useLeanbackUi;
+bool get _phone => PlatformDetection.useMobileUi;
+
+/// The UI scale, which Home sizes its rows and info area by.
+double _desktopScale(BuildContext context) =>
+    previewValue(context, UserPreferences.desktopUiScale).scaleFactor;
+
+/// TV rows render at 0.8 of the desktop size, same as homeRowPlatformScale.
+double _rowScale(BuildContext context) =>
+    (_tv ? 0.8 : 1.0) * _desktopScale(context);
+
+double get _rowLeftInset => _phone ? 16 : (_tv ? tvTopNavbarRowInset + 32 : 32);
+
+/// Lays [child] out at the platform design size, then scales it into the card.
+Widget _screen(Widget child) {
+  final size = _designSize();
+  return AspectRatio(
+    aspectRatio: size.aspectRatio,
+    child: FittedBox(
+      fit: BoxFit.fill,
+      child: SizedBox.fromSize(
+        size: size,
+        child: ColoredBox(color: AppColorScheme.background, child: child),
+      ),
+    ),
+  );
+}
+
+/// Live preview when artwork has loaded, the drawn stand-in until then. The
+/// stand-in keeps the same aspect so nothing jumps when the artwork lands.
+Widget _liveOrFallback({
+  required Widget Function(BuildContext context, List<MediaBarSlideItem> items)
+  live,
+  required Widget fallback,
+  double fallbackAspect = 16 / 10,
+}) {
+  final framedFallback = AspectRatio(
+    aspectRatio: _designSize().aspectRatio,
+    child: Center(
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: SizedBox(
+          width: 320,
+          height: 320 / fallbackAspect,
+          child: fallback,
+        ),
+      ),
+    ),
+  );
+  final listenable = SetupPreviewData.listenable;
+  if (listenable == null) return framedFallback;
+  return ListenableBuilder(
+    listenable: listenable,
+    builder: (context, _) {
+      final items = SetupPreviewData.items;
+      if (items.isEmpty) return framedFallback;
+      return _screen(live(context, items));
+    },
+  );
+}
+
+MediaBarSlideItem _itemAt(List<MediaBarSlideItem> items, int index) =>
+    items[index % items.length];
+
+const List<Shadow> _textShadows = [
+  Shadow(blurRadius: 4, color: Colors.black54),
+];
+
+String _runtimeText(Duration? runtime) {
+  if (runtime == null) return '';
+  final hours = runtime.inHours;
+  final minutes = runtime.inMinutes % 60;
+  return hours > 0 ? '${hours}h ${minutes}m' : '${minutes}m';
+}
+
+List<String> _metaParts(MediaBarSlideItem item) => [
+  if (item.year != null) '${item.year}',
+  if (item.officialRating != null) item.officialRating!,
+  if (item.runtime != null) _runtimeText(item.runtime),
+  if (item.genres.isNotEmpty) item.genres.take(3).join(' • '),
+];
+
+Widget _artwork(String? url, {Alignment alignment = Alignment.center}) {
+  if (url == null || url.isEmpty) {
+    return ColoredBox(
+      color: AppColorScheme.onSurface.withValues(alpha: 0.1),
+      child: const SizedBox.expand(),
+    );
+  }
+  return BoundedNetworkImage(
+    imageUrl: url,
+    fit: BoxFit.cover,
+    alignment: alignment,
+  );
+}
+
+/// The item's logo when it has one, its title in [fallbackStyle] otherwise,
+/// matching how the real bar and detail pages fall back.
+Widget _logoOrTitle(
+  MediaBarSlideItem item, {
+  required double width,
+  required double height,
+  required TextStyle fallbackStyle,
+  Alignment alignment = Alignment.bottomLeft,
+}) {
+  return SizedBox(
+    width: width,
+    height: height,
+    child: item.logoUrl != null
+        ? BoundedNetworkImage(
+            imageUrl: item.logoUrl!,
+            fit: BoxFit.contain,
+            alignment: alignment,
+          )
+        : Align(
+            alignment: alignment,
+            child: Text(
+              item.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: fallbackStyle,
+            ),
+          ),
+  );
+}
+
+/// A score for every source the ratings row knows beyond the server's own,
+/// so a preview shows exactly which sources a surface's settings pick out.
+const _sampleScores = <String, double>{
+  'tomatoes_audience': 91,
+  'imdb': 7.8,
+  'tmdb': 78,
+  'metacritic': 74,
+  'metacriticuser': 71,
+  'trakt': 82,
+  'letterboxd': 3.9,
+  'myanimelist': 8.1,
+  'rogerebert': 3.5,
+};
+
+/// The real ratings row for [item] as one surface's rating settings have it,
+/// with sample scores wherever the item has none. [personal] is for the
+/// surfaces that show the viewer's own rating.
+Widget _sampleRatings(
+  BuildContext context,
+  MediaBarSlideItem item,
+  RatingSettings settings, {
+  bool personal = false,
+  bool? labels,
+  bool? badges,
+  bool singleLine = false,
+  bool inlineChips = false,
+  bool columns = false,
+  double columnTextScale = 1,
+}) => RatingsRow(
+  ratings: _sampleScores,
+  communityRating: item.communityRating ?? 7.8,
+  criticRating: item.criticRating ?? 87,
+  personalRating: personal ? 8 : null,
+  enableAdditionalRatings: previewValue(context, settings.additionalRatings),
+  enabledRatings: previewValue(context, settings.sources),
+  showLabels: labels ?? previewValue(context, settings.labels),
+  showBadges: badges ?? previewValue(context, settings.badges),
+  singleLine: singleLine,
+  inlineChips: inlineChips,
+  columns: columns,
+  columnTextScale: columnTextScale,
+);
+
+Color _overlayColor(BuildContext context) => OverlayColorPalette.resolveColor(
+  previewValue(context, UserPreferences.mediaBarOverlayColor),
+);
+
+double _overlayOpacity(BuildContext context) =>
+    previewValue(context, UserPreferences.mediaBarOverlayOpacity)
+        .toDouble()
+        .clamp(0.0, 100.0) /
+    100.0;
+
+// ---------------------------------------------------------------------------
+// Media bar modes
+// ---------------------------------------------------------------------------
+
+Widget mediaBarPreview(String mode) => _liveOrFallback(
+  live: (context, titles) {
+    final items = _withNewReleasePreview(context, titles);
+    final peek = _rowPeekCover(context, mode);
+    final bar = _mediaBarModePreview(context, mode, items, rowPeek: peek);
+    if (peek == 0) return bar;
+    return ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          bar,
+          Positioned(
+            left: 0,
+            right: 0,
+            top: _designSize().height - peek,
+            child: _homeRowsColumn(
+              context,
+              items,
+              modern:
+                  !_phone &&
+                  previewValue(
+                    context,
+                    UserPreferences.homeRowsStyle,
+                  ).usesModernCards,
+              infoArea: false,
+            ),
+          ),
+        ],
+      ),
+    );
+  },
+  fallback: _fallbackMediaBar(mode),
+  fallbackAspect: 16 / 7,
+);
+
+/// [mode]'s bar. Moonfin and MakD keep their backdrop under a row peeking
+/// [rowPeek] up into the bar and lift their content above it, and the others
+/// shrink to what's left, as on Home.
+Widget _mediaBarModePreview(
+  BuildContext context,
+  String mode,
+  List<MediaBarSlideItem> items, {
+  double rowPeek = 0,
+}) => switch (mode) {
+  UserPreferences.mediaBarModeMakd => _makdBar(context, items, rowPeek),
+  UserPreferences.mediaBarModeBookshelf => Padding(
+    padding: EdgeInsets.only(bottom: rowPeek),
+    child: _bookshelfBar(context, items),
+  ),
+  UserPreferences.mediaBarModeGallery => Padding(
+    padding: EdgeInsets.only(bottom: rowPeek),
+    child: _galleryBar(context, items),
+  ),
+  UserPreferences.mediaBarModeBanner => _bannerBar(context, items),
+  UserPreferences.mediaBarModeAya => Padding(
+    padding: EdgeInsets.only(bottom: rowPeek),
+    child: _ayaBar(context, items),
+  ),
+  // The rows carry the whole screen with the bar off, so the preview packs
+  // them tighter than the style default to show more than one.
+  UserPreferences.mediaBarModeOff => _homeRowsScreen(
+    context,
+    items,
+    modern: !_phone,
+    rowGapOverride: 24,
+  ),
+  _ => _moonfinBar(context, items, rowPeek),
+};
+
+/// The titles the preview draws, with the new release banner on the first one
+/// while the switch is on and on none while it is off. The bar only finds a
+/// release when one aired lately, so a series stands in with a sample. With no
+/// series there's nothing to flag, as on the bar.
+List<MediaBarSlideItem> _withNewReleasePreview(
+  BuildContext context,
+  List<MediaBarSlideItem> items,
+) {
+  if (!previewValue(context, UserPreferences.mediaBarNewReleaseBanner)) {
+    return [for (final item in items) item.withNewRelease(null)];
+  }
+  final flagged = items.indexWhere((item) => item.newRelease != null);
+  final series = items.indexWhere((item) => item.itemType == 'Series');
+  if (flagged < 0 && series < 0) return items;
+  final lead = flagged >= 0 ? flagged : series;
+  final first = items[lead].newRelease != null
+      ? items[lead]
+      : items[lead].withNewRelease(
+          const MediaBarNewReleaseInfo(
+            kind: MediaBarNewRelease.newSeason,
+            season: 2,
+          ),
+        );
+  return [
+    first,
+    for (var i = 0; i < items.length; i++)
+      if (i != lead) items[i],
+  ];
+}
+
+/// [title] with the new release banner under it, the way every mode but
+/// bookshelf draws it. Phones keep the label alone.
+Widget _titleWithRelease(
+  MediaBarSlideItem item,
+  Widget title, {
+  bool center = false,
+}) {
+  final release = item.newRelease;
+  if (release == null) return title;
+  final alignment = center
+      ? CrossAxisAlignment.center
+      : CrossAxisAlignment.start;
+  return Column(
+    crossAxisAlignment: alignment,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      title,
+      const SizedBox(height: 8),
+      MediaBarNewReleaseLine(
+        release: release,
+        showMessage: !_phone,
+        alignment: alignment,
+      ),
+    ],
+  );
+}
+
+/// On phones the bar takes 55 percent of the screen and the rows carry on
+/// beneath, which is exactly what the preview shows too.
+Widget _phoneBarScreen(
+  BuildContext context,
+  List<MediaBarSlideItem> items,
+  Widget bar,
+) {
+  return Column(
+    children: [
+      SizedBox(height: _designSize().height * 0.55, child: bar),
+      Expanded(
+        child: ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.topCenter,
+            maxHeight: double.infinity,
+            child: _homeRowsColumn(context, items, modern: false),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _dots({
+  required int count,
+  required double active,
+  required double inactive,
+  required double inactiveAlpha,
+  double gap = 4,
+  bool pillActive = false,
+  double? height,
+}) {
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      for (var i = 0; i < count; i++)
+        Container(
+          width: i == 0 ? active : inactive,
+          height:
+              height ?? (i == 0 ? (pillActive ? inactive : active) : inactive),
+          margin: EdgeInsets.symmetric(horizontal: gap),
+          decoration: BoxDecoration(
+            shape: pillActive ? BoxShape.rectangle : BoxShape.circle,
+            borderRadius: pillActive ? BorderRadius.circular(3) : null,
+            color: i == 0
+                ? AppColorScheme.onSurface
+                : AppColorScheme.onSurface.withValues(alpha: inactiveAlpha),
+          ),
+        ),
+    ],
+  );
+}
+
+Widget _navArrow(IconData icon) => Container(
+  width: 48,
+  height: 48,
+  margin: const EdgeInsets.symmetric(horizontal: 8),
+  decoration: BoxDecoration(
+    shape: BoxShape.circle,
+    color: AppColorScheme.scrim.withValues(alpha: 0.4),
+    border: Border.fromBorderSide(ThemeRegistry.active.borders.cardBorder),
+  ),
+  child: Icon(
+    icon,
+    size: 28,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.9),
+  ),
+);
+
+Widget _metadataWrap(
+  MediaBarSlideItem item, {
+  WrapAlignment alignment = WrapAlignment.start,
+}) {
+  final style = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.9),
+  );
+  final parts = _metaParts(item);
+  return Wrap(
+    alignment: alignment,
+    crossAxisAlignment: WrapCrossAlignment.center,
+    spacing: 2,
+    runSpacing: 4,
+    children: [
+      for (var i = 0; i < parts.length; i++) ...[
+        if (i > 0) Text(' • ', style: style),
+        if (item.officialRating != null && parts[i] == item.officialRating)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              borderRadius: AppRadius.circular(3),
+              border: Border.fromBorderSide(
+                ThemeRegistry.active.borders.chipBorder,
+              ),
+            ),
+            child: Text(parts[i], style: style.copyWith(fontSize: 11)),
+          )
+        else
+          Text(parts[i], style: style),
+      ],
+    ],
+  );
+}
+
+Widget _moonfinBar(
+  BuildContext context,
+  List<MediaBarSlideItem> items, [
+  double rowPeek = 0,
+]) {
+  final item = items.first;
+  final overlay = _overlayColor(context);
+  final op = _overlayOpacity(context);
+
+  final info = Padding(
+    padding: EdgeInsets.only(
+      left: _phone ? 16 : 24,
+      right: _phone ? 16 : 24,
+      bottom: _phone ? 24 : 36,
+    ),
+    child: Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: _phone ? 6 : 12),
+      decoration: BoxDecoration(
+        color: overlay.withValues(alpha: 0.75 * op),
+        borderRadius: AppRadius.circular(16),
+        border: Border.fromBorderSide(ThemeRegistry.active.borders.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Phones carry the label in the card, its own first line.
+          if (_phone)
+            if (item.newRelease case final release?) ...[
+              MediaBarNewReleaseLine(release: release, showMessage: false),
+              const SizedBox(height: 6),
+            ],
+          _metadataWrap(item),
+          const SizedBox(height: 6),
+          _sampleRatings(context, item, UserPreferences.mediaBarRatings),
+          if (item.overview != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              item.overview!,
+              maxLines: _phone ? 2 : 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: _phone ? 12 : 14,
+                height: 1.4,
+                color: AppColorScheme.onSurface.withValues(alpha: 0.9),
+              ),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+
+  final bar = Stack(
+    fit: StackFit.expand,
+    children: [
+      _artwork(item.backdropUrl),
+      if (!_phone)
+        Positioned(
+          top: 56,
+          left: 40,
+          child: _titleWithRelease(
+            item,
+            _logoOrTitle(
+              item,
+              width: 280,
+              height: 120,
+              fallbackStyle: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w800,
+                height: 1.05,
+                color: AppColorScheme.onSurface,
+                shadows: _textShadows,
+              ),
+            ),
+          ),
+        ),
+      Positioned(
+        left: 0,
+        right: 0,
+        bottom: rowPeek,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_phone)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, bottom: 8),
+                child: _logoOrTitle(
+                  item,
+                  width: 180,
+                  height: 70,
+                  fallbackStyle: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    height: 1.05,
+                    color: AppColorScheme.onSurface,
+                    shadows: _textShadows,
+                  ),
+                ),
+              ),
+            info,
+          ],
+        ),
+      ),
+      Positioned(
+        left: 0,
+        right: 0,
+        bottom: 8 + rowPeek,
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: overlay.withValues(alpha: op * 0.6),
+              borderRadius: AppRadius.circular(12),
+            ),
+            child: _dots(count: 5, active: 10, inactive: 8, inactiveAlpha: 0.5),
+          ),
+        ),
+      ),
+      if (!_phone) ...[
+        Align(
+          alignment: Alignment.centerLeft,
+          child: _navArrow(Icons.chevron_left),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: _navArrow(Icons.chevron_right),
+        ),
+      ],
+    ],
+  );
+
+  return _phone ? _phoneBarScreen(context, items, bar) : bar;
+}
+
+/// The real MakD widgets at the preview's size, above a peeking first row.
+Widget _makdBar(
+  BuildContext context,
+  List<MediaBarSlideItem> items,
+  double rowPeek,
+) {
+  final item = items.first;
+  final size = _designSize();
+  final m = MakdMetrics(size, rowPeek: rowPeek);
+  final ratings = UserPreferences.mediaBarRatings;
+  return ClipRect(
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        _artwork(item.backdropUrl, alignment: const Alignment(0, -0.6)),
+        MakdWash(
+          flat: m.touchPortrait,
+          color: _overlayColor(context),
+          opacity: _overlayOpacity(context),
+        ),
+        Positioned(
+          left: m.touchPortrait ? (m.w - m.contentWidth) / 2 : m.gutter,
+          width: m.contentWidth,
+          bottom: size.height - m.contentBottom,
+          child: MakdContent(
+            item: item,
+            m: m,
+            ratings: _sampleScores,
+            enableAdditionalRatings: previewValue(
+              context,
+              ratings.additionalRatings,
+            ),
+            enabledRatings: previewValue(context, ratings.sources),
+            use24Hour: previewValue(context, UserPreferences.use24HourClock),
+            isFavorite: item.isFavorite,
+            focused: _tv ? MakdButton.info : null,
+            onPressed: (_) {},
+          ),
+        ),
+        if (items.length > 1)
+          Positioned(
+            left: m.touchPortrait ? 0 : null,
+            right: m.touchPortrait ? 0 : 0.03 * m.w,
+            bottom: size.height - m.dotsBottom,
+            child: m.touchPortrait
+                ? Center(child: MakdDots(count: items.length, current: 0, m: m))
+                : MakdDots(count: items.length, current: 0, m: m),
+          ),
+      ],
+    ),
+  );
+}
+
+Widget _bookshelfBar(BuildContext context, List<MediaBarSlideItem> items) {
+  final bar = LayoutBuilder(
+    builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      final isMobile = width < 600;
+      final totalHeight = constraints.maxHeight;
+      final contentHeight = totalHeight - (isMobile ? 108 : 0);
+      final activeHeight = contentHeight * 0.84;
+      final activeWidth = activeHeight * 0.72;
+      final spineHeight = contentHeight * 0.76;
+      final spineWidth = isMobile ? 48.0 : 36.0;
+      final centerWidth = activeWidth + (isMobile ? 0 : 56);
+      final maxSide = (((width - centerWidth) / 2) / (spineWidth + 4))
+          .floor()
+          .clamp(1, 20);
+      final active = items.first;
+
+      Widget spine(int index) {
+        final item = _itemAt(items, index);
+        return Container(
+          width: spineWidth,
+          height: spineHeight,
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          decoration: BoxDecoration(
+            color: glowColorForGenres(item.genres),
+            borderRadius: BorderRadius.circular(6),
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [
+                Colors.black.withValues(alpha: 0.35),
+                Colors.white.withValues(alpha: 0.12),
+                glowColorForGenres(item.genres),
+                Colors.black.withValues(alpha: 0.45),
+              ],
+              stops: const [0.0, 0.25, 0.6, 1.0],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.55),
+                blurRadius: 6,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  (index + 1).toString().padLeft(2, '0'),
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                    color: Color(0xE6E5D5B8),
+                  ),
+                ),
+              ),
+              Container(
+                width: 1,
+                height: 16,
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                color: const Color(0x40E5D5B8),
+              ),
+              Expanded(
+                child: RotatedBox(
+                  quarterTurns: 3,
+                  child: Center(
+                    child: Text(
+                      item.title.toUpperCase(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFE5D5B8),
+                        shadows: [Shadow(blurRadius: 2, color: Colors.black)],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      }
+
+      final book = Container(
+        width: activeWidth,
+        height: activeHeight,
+        decoration: BoxDecoration(
+          color: glowColorForGenres(active.genres),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(3),
+            bottomLeft: Radius.circular(3),
+            topRight: Radius.circular(8),
+            bottomRight: Radius.circular(8),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.75),
+              blurRadius: 14,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(3),
+            bottomLeft: Radius.circular(3),
+            topRight: Radius.circular(8),
+            bottomRight: Radius.circular(8),
+          ),
+          child: Padding(
+            padding: EdgeInsets.only(left: activeWidth * 0.12),
+            child: _artwork(active.posterUrl),
+          ),
+        ),
+      );
+
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: isMobile
+                ? const ColoredBox(color: Color(0xFF1C100A))
+                : Row(
+                    children: [
+                      const Expanded(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [Color(0xFF130905), Color(0xFF23150D)],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        width: centerWidth,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF1C100A),
+                          border: Border.symmetric(
+                            vertical: BorderSide(
+                              color: Color(0xFF382314),
+                              width: 8,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const Expanded(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [Color(0xFF23150D), Color(0xFF130905)],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          Padding(
+            padding: EdgeInsets.only(
+              top: isMobile ? 88 : 0,
+              bottom: isMobile ? 20 : 0,
+            ),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    for (var i = maxSide; i >= 1; i--) spine(i),
+                    const SizedBox(width: 8),
+                    book,
+                    const SizedBox(width: 8),
+                    for (var i = maxSide + 1; i <= maxSide * 2; i++) spine(i),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              height: 12,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xFF5A3D28), Color(0xFF26180E)],
+                ),
+                border: Border(
+                  top: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.08),
+                    width: 1.5,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.65),
+                    blurRadius: 5,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+
+  return _phone ? _phoneBarScreen(context, items, bar) : bar;
+}
+
+Widget _galleryBar(BuildContext context, List<MediaBarSlideItem> items) {
+  if (_phone) return _galleryCoverflow(context, items);
+
+  final l10n = AppLocalizations.of(context);
+  final size = _designSize();
+  final active = items.first;
+  final glow = glowColorForGenres(active.genres);
+  final badgeStyle = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    color: AppColorScheme.onSurface,
+  );
+
+  Widget badge(String text, {bool tinted = false, bool outlined = false}) =>
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: tinted
+              ? AppColorScheme.accent.withValues(alpha: 0.22)
+              : AppColorScheme.scrim.withValues(alpha: 0.35),
+          borderRadius: AppRadius.circular(8),
+          border: outlined
+              ? Border.all(
+                  color: AppColorScheme.onSurface.withValues(alpha: 0.55),
+                )
+              : null,
+        ),
+        child: Text(text, style: badgeStyle),
+      );
+
+  Widget shimmerBar(double width) => Container(
+    width: width,
+    height: 12,
+    margin: const EdgeInsets.only(top: 6),
+    decoration: BoxDecoration(
+      color: AppColorScheme.onSurface.withValues(alpha: 0.12),
+      borderRadius: AppRadius.circular(6),
+    ),
+  );
+
+  Widget idlePanel(int index) {
+    final item = _itemAt(items, index);
+    return Expanded(
+      flex: 1,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        child: Column(
+          children: [
+            SizedBox(
+              height: 24,
+              child: Text(
+                (index + 1).toString().padLeft(2, '0'),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.5,
+                  color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Opacity(opacity: 0.35, child: _artwork(item.backdropUrl)),
+                    Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 2,
+                            height: 24,
+                            color: AppColorScheme.accent.withValues(alpha: 0.7),
+                          ),
+                          Expanded(
+                            child: RotatedBox(
+                              quarterTurns: 3,
+                              child: Center(
+                                child: Text(
+                                  item.title.toUpperCase(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 2.0,
+                                    color: AppColorScheme.onSurface,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 6,
+                                        color: AppColorScheme.scrim.withValues(
+                                          alpha: 0.8,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Container(
+                            width: 2,
+                            height: 24,
+                            color: AppColorScheme.accent.withValues(alpha: 0.7),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  final activePanel = Expanded(
+    flex: 16,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: Column(
+        children: [
+          const SizedBox(height: 30),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _artwork(active.backdropUrl),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomLeft,
+                        end: Alignment.topRight,
+                        colors: [
+                          AppColorScheme.scrim.withValues(alpha: 0.95),
+                          AppColorScheme.scrim.withValues(alpha: 0.15),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 24, 24, 24),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              _titleWithRelease(
+                                active,
+                                Text(
+                                  active.title.toUpperCase(),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 34,
+                                    fontWeight: FontWeight.w900,
+                                    height: 1.02,
+                                    letterSpacing: 1.0,
+                                    color: AppColorScheme.onSurface,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 12,
+                                        color: AppColorScheme.scrim.withValues(
+                                          alpha: 0.7,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  if (active.runtime != null)
+                                    badge(_runtimeText(active.runtime)),
+                                  if (active.officialRating != null)
+                                    badge(
+                                      active.officialRating!,
+                                      outlined: true,
+                                    ),
+                                  if (active.year != null)
+                                    badge('${active.year}'),
+                                  for (final genre in active.genres.take(3))
+                                    badge(genre, tinted: true),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              _sampleRatings(
+                                context,
+                                active,
+                                UserPreferences.mediaBarRatings,
+                                badges: false,
+                              ),
+                              if (active.overview != null) ...[
+                                const SizedBox(height: 14),
+                                Text(
+                                  active.overview!,
+                                  maxLines: _tv ? 3 : 4,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    height: 1.45,
+                                    color: AppColorScheme.onSurface.withValues(
+                                      alpha: 0.9,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 28),
+                        Expanded(
+                          flex: 2,
+                          child: Container(
+                            padding: const EdgeInsets.all(18),
+                            decoration: BoxDecoration(
+                              color: AppColorScheme.scrim.withValues(
+                                alpha: 0.55,
+                              ),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: AppColorScheme.onSurface.withValues(
+                                  alpha: 0.12,
+                                ),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  l10n.director,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 1.4,
+                                    color: AppColorScheme.accent,
+                                  ),
+                                ),
+                                shimmerBar(120),
+                                const SizedBox(height: 14),
+                                Text(
+                                  l10n.starring,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 1.4,
+                                    color: AppColorScheme.accent,
+                                  ),
+                                ),
+                                shimmerBar(160),
+                                shimmerBar(140),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: const Alignment(-0.2, 0.1),
+            radius: 1.1,
+            colors: [
+              glow.withValues(alpha: 0.42),
+              glow.withValues(alpha: 0.14),
+              AppColorScheme.background.withValues(alpha: 0.0),
+            ],
+            stops: const [0.0, 0.45, 1.0],
+          ),
+        ),
+      ),
+      Positioned(
+        top: size.height * 0.09,
+        bottom: size.height * 0.03,
+        left: 24,
+        right: 24,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: Row(
+            children: [activePanel, for (var i = 1; i < 5; i++) idlePanel(i)],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _galleryCoverflow(BuildContext context, List<MediaBarSlideItem> items) {
+  final active = items.first;
+  final glow = glowColorForGenres(active.genres);
+  final size = _designSize();
+  final cardWidth = size.width * 0.64;
+
+  Widget sideCard(int index) => Transform.scale(
+    scale: 0.82,
+    child: Opacity(
+      opacity: 0.45,
+      child: SizedBox(
+        width: cardWidth,
+        child: AspectRatio(
+          aspectRatio: 2 / 3,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: _artwork(
+              _itemAt(items, index).posterUrl ??
+                  _itemAt(items, index).backdropUrl,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  final metaParts = [
+    if (active.year != null) '${active.year}',
+    if (active.runtime != null) _runtimeText(active.runtime),
+    if (active.officialRating != null) active.officialRating!,
+  ];
+  final metaStyle = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+  );
+
+  final bar = Stack(
+    children: [
+      Positioned.fill(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(0, -0.35),
+              radius: 1.0,
+              colors: [
+                glow.withValues(alpha: 0.4),
+                glow.withValues(alpha: 0.12),
+                AppColorScheme.background.withValues(alpha: 0.0),
+              ],
+              stops: const [0.0, 0.45, 1.0],
+            ),
+          ),
+        ),
+      ),
+      Column(
+        children: [
+          const SizedBox(height: 16),
+          Expanded(
+            child: ClipRect(
+              child: OverflowBox(
+                maxWidth: double.infinity,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    sideCard(1),
+                    SizedBox(
+                      width: cardWidth,
+                      child: AspectRatio(
+                        aspectRatio: 2 / 3,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: AppColorScheme.onSurface.withValues(
+                                alpha: 0.12,
+                              ),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: glow.withValues(alpha: 0.5),
+                                blurRadius: 30,
+                                spreadRadius: 1.5,
+                              ),
+                              BoxShadow(
+                                color: AppColorScheme.scrim.withValues(
+                                  alpha: 0.55,
+                                ),
+                                blurRadius: 22,
+                                offset: const Offset(0, 16),
+                              ),
+                            ],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: _artwork(
+                              active.posterUrl ?? active.backdropUrl,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    sideCard(2),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
+            child: Column(
+              children: [
+                Text(
+                  active.title.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                    color: AppColorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                // The label leads the meta line, like the real carousel.
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    if (active.newRelease case final release?) ...[
+                      MediaBarNewReleaseLine(
+                        release: release,
+                        showMessage: false,
+                        alignment: CrossAxisAlignment.center,
+                      ),
+                      Text('  ·  ', style: metaStyle),
+                    ],
+                    Flexible(
+                      child: Text(
+                        metaParts.join('  ·  '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: metaStyle,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                _sampleRatings(
+                  context,
+                  active,
+                  UserPreferences.mediaBarRatings,
+                  badges: false,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          _dots(
+            count: 5,
+            active: 18,
+            inactive: 6,
+            inactiveAlpha: 0.3,
+            gap: 3,
+            pillActive: true,
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ],
+  );
+
+  return _phoneBarScreen(context, items, bar);
+}
+
+Widget _bannerBar(BuildContext context, List<MediaBarSlideItem> items) {
+  final item = items.first;
+  final height = _tv ? 320.0 : (_phone ? 200.0 : 240.0);
+  final metaParts = [
+    if (item.year != null) '${item.year}',
+    if (item.runtime != null) _runtimeText(item.runtime),
+    if (item.officialRating != null) item.officialRating!,
+  ];
+
+  final banner = Padding(
+    padding: _phone
+        ? const EdgeInsets.fromLTRB(16, 24, 16, 8)
+        : const EdgeInsets.fromLTRB(24, 0, 24, 8),
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: SizedBox(
+        height: height,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _artwork(item.backdropUrl),
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [Color(0xE6000000), Color(0x00000000)],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 20,
+              right: 20,
+              bottom: 16,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _titleWithRelease(
+                    item,
+                    _logoOrTitle(
+                      item,
+                      width: 240,
+                      height: 56,
+                      fallbackStyle: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: AppColorScheme.onSurface,
+                        shadows: [
+                          Shadow(
+                            blurRadius: 10,
+                            color: AppColorScheme.scrim.withValues(alpha: 0.8),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    metaParts.join('  ·  '),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColorScheme.onSurface.withValues(alpha: 0.75),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _sampleRatings(
+                    context,
+                    item,
+                    UserPreferences.mediaBarRatings,
+                    labels: false,
+                    badges: false,
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              top: 12,
+              right: 16,
+              child: _dots(
+                count: 5,
+                active: 16,
+                inactive: 6,
+                inactiveAlpha: 0.4,
+                gap: 2,
+                pillActive: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      banner,
+      Expanded(
+        child: ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.topCenter,
+            maxHeight: double.infinity,
+            child: _homeRowsColumn(context, items, modern: !_phone),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// Artwork first, with the logo top left and the page marks top right. The
+/// bar takes 65 percent of the screen on every platform, so the rows always
+/// show underneath it.
+Widget _ayaBar(BuildContext context, List<MediaBarSlideItem> items) {
+  final item = items.first;
+  final size = _designSize();
+
+  final padding = _phone
+      ? const EdgeInsets.fromLTRB(16, 60, 16, 16)
+      : EdgeInsets.fromLTRB(_tv ? 80 : 32, _tv ? 71 : 32, _tv ? 80 : 32, 32);
+
+  // Phones preview in portrait, which is where the poster is used.
+  final artwork = _phone
+      ? (item.posterUrl ?? item.backdropUrl)
+      : item.backdropUrl;
+
+  final bar = Padding(
+    padding: padding,
+    child: ClipRRect(
+      borderRadius: AppRadius.circular(18),
+      child: SizedBox(
+        height: size.height * 0.65 - padding.vertical,
+        width: double.infinity,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _artwork(artwork),
+            Positioned(
+              left: 44,
+              top: 40,
+              // Phones show Aya's poster bare, so no banner there.
+              child: _titleWithRelease(
+                _phone ? item.withNewRelease(null) : item,
+                _logoOrTitle(
+                  item,
+                  width: 340,
+                  height: 100,
+                  alignment: Alignment.topLeft,
+                  fallbackStyle: TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5,
+                    height: 1.0,
+                    color: AppColorScheme.onSurface,
+                    shadows: [
+                      Shadow(
+                        blurRadius: 20,
+                        color: AppColorScheme.scrim.withValues(alpha: 0.72),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 22,
+              right: 24,
+              child: _dots(
+                count: 5,
+                active: 16,
+                inactive: 10,
+                inactiveAlpha: 0.30,
+                gap: 2.5,
+                pillActive: true,
+                height: 2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      bar,
+      Expanded(
+        child: ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.topCenter,
+            maxHeight: double.infinity,
+            child: _homeRowsColumn(context, items, modern: !_phone),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Navbar positions
+// ---------------------------------------------------------------------------
+
+Widget navbarPreview(NavbarPosition position) => _liveOrFallback(
+  live: (context, items) => switch (position) {
+    NavbarPosition.top => _topNavbarPreview(context, items),
+    NavbarPosition.left => _leftNavbarPreview(context, items),
+    NavbarPosition.bottom =>
+      _bottomNavbarPreview(context, items, BottomNavbarStyle.dock),
+  },
+  fallback: _fallbackNavbar(position),
+);
+
+/// Home as the settings live preview draws it: the navbar where it's set, with
+/// its buttons, labels and clock, over the rows in their set style and size.
+/// Values a settings picker is trying stand in for the saved ones.
+/// [focusCard] holds the first card in focus in Classic rows too, so Focus
+/// Color has a ring to show on.
+Widget settingsHomePreview({bool focusCard = false}) {
+  final position = GetIt.instance.isRegistered<UserPreferences>()
+      ? GetIt.instance<UserPreferences>().get(UserPreferences.navbarPosition)
+      : NavbarPosition.top;
+  return _liveOrFallback(
+    live: (context, items) {
+      final modern = previewValue(
+        context,
+        UserPreferences.homeRowsStyle,
+      ).usesModernCards;
+      // Modern rows hold the first card in focus, the way Home looks with a
+      // row in focus, so the card's grown state and its details show.
+      final focusFirst = modern || focusCard;
+      final home = switch (previewValue(
+        context,
+        UserPreferences.navbarPosition,
+      )) {
+        NavbarPosition.top => _topNavbarPreview(
+          context,
+          items,
+          modern: modern,
+          focusFirst: focusFirst,
+        ),
+        NavbarPosition.left => _leftNavbarPreview(
+          context,
+          items,
+          modern: modern,
+          focusFirst: focusFirst,
+        ),
+        NavbarPosition.bottom => _bottomNavbarPreview(
+          context,
+          items,
+          previewValue(context, UserPreferences.bottomNavbarStyle),
+          modern: modern,
+          focusFirst: focusFirst,
+        ),
+      };
+      final backdrop = settingsHomeBackdropStyle(context);
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          if (backdrop != UserPreferences.homeBackdropOff)
+            HomeBackdrop(
+              url: items.first.backdropUrl,
+              blurAmount: previewValue(
+                context,
+                UserPreferences.browsingBackgroundBlurAmount,
+              ).toDouble(),
+              style: backdrop,
+            ),
+          const HomeGradientScrim(),
+          home,
+        ],
+      );
+    },
+    fallback: _fallbackNavbar(position),
+  );
+}
+
+/// The backdrop Home draws. A phone only has the switch and always fills the
+/// screen, and a style the picker is trying shows before the switch follows it.
+String settingsHomeBackdropStyle(BuildContext context) {
+  final enabled = previewValue(context, UserPreferences.homeBackdropEnabled);
+  if (_phone) {
+    return enabled
+        ? UserPreferences.homeBackdropFullScreen
+        : UserPreferences.homeBackdropOff;
+  }
+  final trying =
+      SettingsPreviewScope.maybeOf(context)
+          ?.isTrying(UserPreferences.homeBackdropStyle.key) ??
+      false;
+  return enabled || trying
+      ? previewValue(context, UserPreferences.homeBackdropStyle)
+      : UserPreferences.homeBackdropOff;
+}
+
+/// [body] as a screen under the navbar the live preview draws over Home, for a
+/// screen that keeps its own room for the bar.
+Widget settingsNavbarPreviewOver(Widget body) => _screen(
+  Builder(
+    builder: (context) {
+      final items = SetupPreviewData.items;
+      return switch (previewValue(context, UserPreferences.navbarPosition)) {
+        NavbarPosition.top => _topNavbarPreview(context, items, body: body),
+        NavbarPosition.left => _leftNavbarPreview(context, items, body: body),
+        NavbarPosition.bottom => _bottomNavbarPreview(
+          context,
+          items,
+          previewValue(context, UserPreferences.bottomNavbarStyle),
+          body: body,
+        ),
+      };
+    },
+  ),
+);
+
+typedef _NavButton = ({
+  Widget Function(double size, Color color) icon,
+  String label,
+});
+
+bool get _seerrAvailable =>
+    GetIt.instance.isRegistered<PluginSyncService>() &&
+    GetIt.instance<PluginSyncService>().seerrAvailable;
+
+bool get _calendarAvailable =>
+    GetIt.instance.isRegistered<PluginSyncService>() &&
+    GetIt.instance<PluginSyncService>().calendarAvailable;
+
+/// The real bar waits for something saved, so it never offers a way into an
+/// empty screen.
+bool get _downloadsAvailable =>
+    DownloadsNavSlot.isSupported() && DownloadsNavSlot.hasSavedMedia();
+
+/// The user's libraries for a navbar that lists them one by one, minus the
+/// ones the real navbar leaves out. Until they've loaded, stand-ins, one per
+/// kind of title the preview has loaded.
+List<(IconData, String)> _navLibraries(
+  AppLocalizations l10n,
+  List<MediaBarSlideItem> items, {
+  required bool liveTvButton,
+  required bool kids,
+}) {
+  final loaded = SetupPreviewData.libraries.value;
+  if (loaded.isNotEmpty) {
+    return [
+      for (final library in librariesForNav(
+        loaded,
+        liveTvButton,
+        hideLiveTv: kids,
+      ))
+        (libraryIcon(library), library.name),
+    ];
+  }
+  final series = items.any((item) => item.itemType == 'Series');
+  return [
+    if (!series || items.any((item) => item.itemType == 'Movie'))
+      (Icons.movie_rounded, l10n.movies),
+    if (series) (Icons.tv_rounded, l10n.tvShows),
+  ];
+}
+
+/// The navbar's buttons in the top bar and sidebar's own order, with the
+/// icons and labels they draw. Each one waits on its switch and on the same
+/// gates the real one checks, such as the server offering the feature.
+List<_NavButton> _navButtons(
+  BuildContext context,
+  List<MediaBarSlideItem> items,
+) {
+  final l10n = AppLocalizations.of(context);
+  bool on(Preference<bool> preference) => previewValue(context, preference);
+  _NavButton icon(IconData glyph, String label) => (
+    icon: (size, color) => Icon(glyph, size: size, color: color),
+    label: label,
+  );
+  _NavButton asset(String path, String label) => (
+    icon: (size, color) => Image.asset(
+      path,
+      width: size,
+      height: size,
+      color: color,
+      fit: BoxFit.contain,
+    ),
+    label: label,
+  );
+  final kids = on(UserPreferences.kidsModeEnabled);
+  final libraries = !kids && on(UserPreferences.showLibrariesInToolbar);
+  final liveTv =
+      !kids &&
+      on(UserPreferences.showLiveTvButton) &&
+      SetupPreviewData.hasLiveTv;
+  final seerrLabel = GetIt.instance.isRegistered<SeerrPreferences>()
+      ? GetIt.instance<SeerrPreferences>().labelOrDefault(l10n.seerr)
+      : l10n.seerr;
+  return [
+    icon(Icons.home_rounded, l10n.home),
+    icon(Icons.search_rounded, l10n.search),
+    if (on(UserPreferences.showShuffleButton))
+      icon(Icons.shuffle_rounded, l10n.shuffle),
+    if (on(UserPreferences.showGenresButton))
+      asset('assets/icons/genres.png', l10n.genres),
+    if (on(UserPreferences.showFavoritesButton))
+      icon(Icons.favorite_rounded, l10n.favorites),
+    if (liveTv) icon(Icons.live_tv_rounded, l10n.liveTv),
+    if (!kids &&
+        on(UserPreferences.syncPlayEnabled) &&
+        on(UserPreferences.showSyncPlayButton))
+      icon(Icons.groups_rounded, l10n.watchParties),
+    if (!kids && on(UserPreferences.showSeerrButton) && _seerrAvailable)
+      (
+        icon: (size, color) => SeerrIcon(size: size, color: color),
+        label: seerrLabel,
+      ),
+    if (!kids && on(UserPreferences.showCalendarButton) && _calendarAvailable)
+      icon(Icons.calendar_month_rounded, l10n.calendar),
+    if (libraries && on(UserPreferences.showLibrariesIndividually))
+      for (final (glyph, label) in _navLibraries(
+        l10n,
+        items,
+        liveTvButton: liveTv,
+        kids: kids,
+      ))
+        icon(glyph, label)
+    else if (libraries)
+      asset('assets/icons/clapperboard.png', l10n.libraries),
+    // The real Downloads and Messages buttons also wait for something saved
+    // or posted. The preview leaves that out so their switches show a change.
+    if (on(UserPreferences.showDownloadsButton) && _downloadsAvailable)
+      icon(Icons.download_for_offline, l10n.savedMedia),
+    if (on(UserPreferences.showFriendsButton) && FriendsNavSlot.isAvailable())
+      icon(Icons.people_alt_rounded, l10n.friends),
+    if (on(UserPreferences.showServerMessagesButton))
+      icon(Icons.info_outline_rounded, l10n.serverMessages),
+    icon(Icons.settings_rounded, l10n.settings),
+  ];
+}
+
+/// The toolbar clock as the clock settings have it, or null when it's off.
+String? _previewClock(BuildContext context) {
+  if (previewValue(context, UserPreferences.clockBehavior) ==
+      ClockBehavior.never) {
+    return null;
+  }
+  return formatClockTime(
+    DateTime.now(),
+    use24Hour: previewValue(context, UserPreferences.use24HourClock),
+  );
+}
+
+/// The nav slot colour when the theme cycles one, the resting grey otherwise,
+/// exactly as the real buttons resolve it.
+Color _navIconColor(int slot) =>
+    AppColorScheme.navColorForSlot(slot) ??
+    AppColorScheme.onSurface.withValues(alpha: 0.6);
+
+Color _navbarSurface(BuildContext context) =>
+    OverlayColorPalette.resolveColor(
+      previewValue(context, UserPreferences.navbarColor),
+    ).withValues(
+      alpha:
+          previewValue(
+            context,
+            UserPreferences.navbarOpacity,
+          ).toDouble().clamp(0.0, 100.0) /
+          100.0,
+    );
+
+String get _userName => GetIt.instance.isRegistered<UserRepository>()
+    ? GetIt.instance<UserRepository>().currentUser?.name ?? ''
+    : '';
+
+/// The signed-in user's picture, the one the real navbar asks the server for.
+String? _userImageUrl() {
+  if (!GetIt.instance.isRegistered<UserRepository>() ||
+      !GetIt.instance.isRegistered<MediaServerClient>()) {
+    return null;
+  }
+  final user = GetIt.instance<UserRepository>().currentUser;
+  if (user == null) return null;
+  try {
+    return GetIt.instance<MediaServerClient>().imageApi.getUserImageUrl(
+      user.id,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+Widget _navAvatar() {
+  final name = _userName;
+  final fallback = Container(
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: Colors.white.withValues(alpha: 0.1),
+    ),
+    child: Text(
+      name.isEmpty ? '?' : name[0].toUpperCase(),
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
+  return SizedBox(
+    width: 40,
+    height: 40,
+    child: ClipOval(
+      child: UserAvatarImage(
+        url: _userImageUrl(),
+        size: 40,
+        fallback: fallback,
+      ),
+    ),
+  );
+}
+
+/// The rows every navbar preview sits around, packed tight so the chrome is
+/// judged against a full screen rather than empty space. [topInset] keeps the
+/// first row off whatever sits above it, chrome or the card's own edge.
+Widget _navbarRows(
+  BuildContext context,
+  List<MediaBarSlideItem> items, {
+  double topInset = 12,
+  bool? modern,
+  bool focusFirst = false,
+}) {
+  return Padding(
+    padding: EdgeInsets.only(top: topInset),
+    child: ClipRect(
+      child: OverflowBox(
+        alignment: Alignment.topCenter,
+        maxHeight: double.infinity,
+        child: _homeRowsColumn(
+          context,
+          items,
+          modern: modern ?? !_phone,
+          focusFirst: focusFirst,
+          rowGapOverride: 24,
+        ),
+      ),
+    ),
+  );
+}
+
+/// The toolbar draws no band of its own. An avatar sits on the left, the
+/// buttons live in one translucent pill in the middle, and the clock keeps
+/// the right, all floating straight over the content.
+Widget _topNavbarPreview(
+  BuildContext context,
+  List<MediaBarSlideItem> items, {
+  Widget? body,
+  bool? modern,
+  bool focusFirst = false,
+}) {
+  final toolbarHeight = _tv ? 95.0 : (_phone ? 60.0 : 80.0);
+  final hPad = _tv ? 48.0 : (_phone ? 12.0 : 32.0);
+  final vPad = _tv ? 27.0 : (_phone ? 8.0 : 10.0);
+  final buttonWidth = _phone ? 40.0 : (_tv ? 44.0 : 56.0);
+  final iconSize = _phone ? 22.0 : (_tv ? 24.0 : 30.0);
+  final buttons = _navButtons(context, items);
+  final expanded =
+      !_phone && previewValue(context, UserPreferences.navbarAlwaysExpanded);
+  final clock = _previewClock(context);
+
+  // The real pill scrolls its buttons once they outgrow the room it's given,
+  // so the preview clips them where they'd scroll.
+  final pill = Container(
+    clipBehavior: Clip.antiAlias,
+    decoration: BoxDecoration(
+      color: _navbarSurface(context),
+      borderRadius: AppRadius.circular(36),
+    ),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      physics: const NeverScrollableScrollPhysics(),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < buttons.length; i++)
+            if (expanded)
+              SizedBox(
+                height: buttonWidth,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      buttons[i].icon(iconSize, _navIconColor(i)),
+                      const SizedBox(width: 8),
+                      Text(
+                        buttons[i].label,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColorScheme.onSurface.withValues(
+                            alpha: 0.8,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              SizedBox(
+                width: buttonWidth,
+                height: buttonWidth,
+                child: Center(
+                  child: buttons[i].icon(iconSize, _navIconColor(i)),
+                ),
+              ),
+        ],
+      ),
+    ),
+  );
+
+  final screen = Column(
+    children: [
+      SizedBox(
+        height: toolbarHeight,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Align(alignment: Alignment.centerLeft, child: _navAvatar()),
+              // A phone's buttons can outgrow its bar, so its pill shrinks to
+              // fit.
+              if (_phone)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 48),
+                  child: FittedBox(fit: BoxFit.scaleDown, child: pill),
+                )
+              else
+                // The room the real bar keeps clear of the avatar and the
+                // clock on both sides, so its pill stays centered.
+                Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: (clock == null ? 44.0 : 96.0) + 14,
+                  ),
+                  child: pill,
+                ),
+              if (!_phone && clock != null)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    clock,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColorScheme.onSurface.withValues(alpha: 0.8),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      if (body == null)
+        Expanded(
+          child: _navbarRows(
+            context,
+            items,
+            modern: modern,
+            focusFirst: focusFirst,
+          ),
+        ),
+    ],
+  );
+  if (body == null) return screen;
+  // A screen with its own top inset runs under the bar, which floats over it
+  // the way the real one does.
+  return Stack(
+    children: [
+      Positioned.fill(child: body),
+      Positioned.fill(child: screen),
+    ],
+  );
+}
+
+/// The collapsed rail is a bare 72 wide gutter of icons with no backdrop, so
+/// the preview keeps it transparent too and just moves the rows over.
+Widget _leftNavbarPreview(
+  BuildContext context,
+  List<MediaBarSlideItem> items, {
+  Widget? body,
+  bool? modern,
+  bool focusFirst = false,
+}) {
+  final iconSize = _tv ? 24.0 : 28.0;
+  final itemHeight = _tv ? 40.0 : 44.0;
+  final buttons = _navButtons(context, items);
+  // Home starts its rows 56 in beside the rail where a TV's top bar takes
+  // tvTopNavbarRowInset, and the rows' own inset is the top bar one.
+  final railInset = _phone ? 0.0 : 56.0 - (_tv ? tvTopNavbarRowInset : 0.0);
+  // The real rail only widens while it has focus, whatever Always Expand
+  // Navbar Labels says, and scrolls once its buttons outgrow the screen. It
+  // floats over the screen rather than pushing it aside.
+  return Stack(
+    children: [
+      Positioned.fill(
+        left: body == null ? railInset : 0,
+        child:
+            body ??
+            _navbarRows(
+              context,
+              items,
+              topInset: 24,
+              modern: modern,
+              focusFirst: focusFirst,
+            ),
+      ),
+      Positioned(
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: 72,
+        child: Center(
+          child: SingleChildScrollView(
+            physics: const NeverScrollableScrollPhysics(),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < buttons.length; i++)
+                  SizedBox(
+                    height: itemHeight,
+                    child: Center(
+                      child: buttons[i].icon(iconSize, _navIconColor(i)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// A floating pill above the bottom edge, its active tab held in a glowing
+/// chip, the way the real bar draws it. Content keeps running underneath.
+/// The real bottom navbar over the tabs a fresh install gets. The card is the
+/// thing to tap, so the bar inside it neither takes touches nor reads out its
+/// tabs.
+Widget _bottomNavbarPreview(
+  BuildContext context,
+  List<MediaBarSlideItem> items,
+  BottomNavbarStyle style, {
+  Widget? body,
+  bool? modern,
+  bool focusFirst = false,
+}) {
+  final l10n = AppLocalizations.of(context);
+  final theme = BottomNavTheme.resolve(context, preview: true);
+  final name = _userName;
+  final imageUrl = _userImageUrl();
+  // The tabs come from the same switches the top bar's buttons do.
+  final gates = BottomNavTabGates(
+    kidsMode: previewValue(context, UserPreferences.kidsModeEnabled),
+    showLibraries: previewValue(context, UserPreferences.showLibrariesInToolbar),
+    showFavorites: previewValue(context, UserPreferences.showFavoritesButton),
+    showGenres: previewValue(context, UserPreferences.showGenresButton),
+    showLiveTv: previewValue(context, UserPreferences.showLiveTvButton),
+    showSeerr: previewValue(context, UserPreferences.showSeerrButton),
+    seerrAvailable: _seerrAvailable,
+    showCalendar: previewValue(context, UserPreferences.showCalendarButton),
+    calendarAvailable: _calendarAvailable,
+  );
+  final views = [
+    for (final item in resolveBarItems(
+      gates,
+      previewValue(context, UserPreferences.bottomNavbarTabs),
+      withoutSearch: style == BottomNavbarStyle.split,
+      isAvailable: (tab) =>
+          tab != BottomNavTab.liveTv || SetupPreviewData.hasLiveTv,
+    ))
+      bottomNavItemView(
+        item,
+        l10n,
+        avatar: (active, size, color) => BottomNavAvatar(
+          imageUrl: imageUrl,
+          name: name,
+          size: BottomNavMetrics.avatarSize,
+          ring: theme.onBar.withValues(alpha: 0.18),
+          fallbackColor: theme.onBar,
+        ),
+      ),
+  ];
+
+  const inset = 24.0;
+  final Widget bar = switch (style) {
+    BottomNavbarStyle.dock => DockBarView(
+        items: views,
+        activeIndex: 0,
+        theme: theme,
+        bottomInset: inset,
+      ),
+    BottomNavbarStyle.split => SplitBarView(
+        items: views,
+        activeIndex: 0,
+        theme: theme,
+        bottomInset: inset,
+        searchLabel: l10n.search,
+      ),
+    BottomNavbarStyle.strip => StripBarView(
+        items: views,
+        activeIndex: 0,
+        theme: theme,
+        bottomInset: inset,
+      ),
+  };
+
+  return Stack(
+    children: [
+      Positioned.fill(
+        child:
+            body ??
+            _navbarRows(
+              context,
+              items,
+              topInset: 24,
+              modern: modern,
+              focusFirst: focusFirst,
+            ),
+      ),
+      Align(
+        alignment: Alignment.bottomCenter,
+        child: IgnorePointer(child: ExcludeSemantics(child: bar)),
+      ),
+    ],
+  );
+}
+
+Widget bottomNavbarStylePreview(BottomNavbarStyle style) => _liveOrFallback(
+  live: (context, items) => _bottomNavbarPreview(context, items, style),
+  fallback: _fallbackBottomNavbar(style),
+);
+
+/// Drawn stand-ins for the three styles: an inset pill, a pill beside a
+/// circle, and a full-width band with its tick.
+Widget _fallbackBottomNavbar(BottomNavbarStyle style) {
+  final surface = AppColorScheme.onSurface.withValues(alpha: 0.14);
+  Widget marks(int count) => Row(
+    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+    children: [for (var i = 0; i < count; i++) _bar(8, 3, _strong)],
+  );
+
+  final rows = _fallbackNavbarRows();
+
+  final Widget chrome = switch (style) {
+    BottomNavbarStyle.dock => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
+        child: Container(
+          height: 14,
+          decoration: BoxDecoration(
+            color: surface,
+            borderRadius: AppRadius.circular(7),
+          ),
+          child: marks(5),
+        ),
+      ),
+    BottomNavbarStyle.split => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 14,
+                decoration: BoxDecoration(
+                  color: surface,
+                  borderRadius: AppRadius.circular(7),
+                ),
+                child: marks(4),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Container(
+              width: 14,
+              height: 14,
+              decoration: BoxDecoration(
+                color: surface,
+                shape: AppColorScheme.isPixel
+                    ? BoxShape.rectangle
+                    : BoxShape.circle,
+              ),
+            ),
+          ],
+        ),
+      ),
+    BottomNavbarStyle.strip => Container(
+        height: 16,
+        color: surface,
+        child: Stack(
+          children: [
+            marks(5),
+            Positioned(
+              top: 0,
+              left: 22,
+              child: Container(width: 10, height: 2, color: AppColorScheme.accent),
+            ),
+          ],
+        ),
+      ),
+  };
+
+  return Column(children: [Expanded(child: rows), chrome]);
+}
+
+Widget _fallbackNavbarRows() => Padding(
+  padding: const EdgeInsets.all(8),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisAlignment: MainAxisAlignment.center,
+    spacing: 6,
+    children: [
+      _bar(30, 3, _weak),
+      Row(
+        spacing: 4,
+        children: [for (var i = 0; i < 4; i++) _posterCard(13)],
+      ),
+    ],
+  ),
+);
+
+Widget _fallbackNavbar(NavbarPosition position) {
+  Widget chrome({double? width, double? height}) => Container(
+    width: width,
+    height: height,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.14),
+    child: Center(
+      child: width != null
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 5,
+              children: [for (var i = 0; i < 4; i++) _bar(8, 3, _strong)],
+            )
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 5,
+              children: [for (var i = 0; i < 4; i++) _bar(8, 3, _strong)],
+            ),
+    ),
+  );
+
+  final rows = _fallbackNavbarRows();
+
+  return switch (position) {
+    NavbarPosition.top => Column(
+      children: [
+        chrome(height: 16),
+        Expanded(child: rows),
+      ],
+    ),
+    NavbarPosition.left => Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        chrome(width: 16),
+        Expanded(child: rows),
+      ],
+    ),
+    NavbarPosition.bottom => _fallbackBottomNavbar(BottomNavbarStyle.dock),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Home rows
+// ---------------------------------------------------------------------------
+
+/// [carousel] picks Carousel over Modern for a modern preview. Left null it
+/// follows the Row Type setting.
+Widget homeRowsPreview({required bool modern, bool? carousel}) =>
+    _liveOrFallback(
+      live: (context, items) => _homeRowsScreen(
+        context,
+        items,
+        modern: modern,
+        carousel: carousel,
+        // Modern's whole point is the focused card, so its preview holds the
+        // first card in that state with the text block it grows underneath.
+        focusFirst: modern,
+      ),
+      fallback: _fallbackHomeRows(modern: modern),
+    );
+
+Widget _homeRowsScreen(
+  BuildContext context,
+  List<MediaBarSlideItem> items, {
+  required bool modern,
+  bool? carousel,
+  bool focusFirst = false,
+  double? rowGapOverride,
+}) {
+  return ClipRect(
+    child: OverflowBox(
+      alignment: Alignment.topCenter,
+      maxHeight: double.infinity,
+      child: _homeRowsColumn(
+        context,
+        items,
+        modern: modern,
+        carousel: carousel,
+        focusFirst: focusFirst,
+        rowGapOverride: rowGapOverride,
+      ),
+    ),
+  );
+}
+
+/// The sample item as a library item, for widgets that only take those.
+AggregatedItem _slideAsItem(MediaBarSlideItem item) => AggregatedItem(
+  id: item.itemId,
+  serverId: item.serverId,
+  rawData: {
+    'Name': item.title,
+    'Type': item.itemType,
+    'Overview': item.overview,
+    'ProductionYear': item.year,
+    'OfficialRating': item.officialRating,
+    'Genres': item.genres,
+    'CommunityRating': item.communityRating,
+    'CriticRating': item.criticRating,
+    if (item.runtime case final runtime?)
+      'RunTimeTicks': runtime.inMicroseconds * 10,
+  },
+);
+
+/// The colours of the 4K and HDR10 built-in labels.
+const _sampleLabels = [
+  PosterBadge(label: '4K', color: '#7C3AED'),
+  PosterBadge(label: 'HDR', color: '#CA8A04'),
+];
+
+/// Sample labels on the preview's posters, only for someone whose server gives
+/// them labels, so the preview never shows what the app never will.
+bool _showSampleLabels(BuildContext context) {
+  if (!GetIt.instance.isRegistered<PosterBadgeRepository>() ||
+      GetIt.instance<PosterBadgeRepository>().available.value != true) {
+    return false;
+  }
+  return previewValue(context, UserPreferences.showPosterLabels);
+}
+
+/// The sample rows' poster and thumb heights at the card size and UI scale
+/// being looked at, the sizes Home draws them at in every row style.
+(double, double) _sampleCardHeights(BuildContext context) {
+  final posterSize = previewValue(context, UserPreferences.posterSize);
+  final scale = _rowScale(context);
+  return (
+    modernImageHeight(posterSize, scale),
+    posterSize.landscapeHeight * scale,
+  );
+}
+
+/// How much of the media bar the first Home row covers while Peek Home Rows
+/// is on: its title and the top half of its cards, as on Home. Zero where
+/// Home doesn't peek. MakD off TV starts the rows at 65% instead, and phones
+/// only peek under MakD.
+double _rowPeekCover(BuildContext context, String mode) {
+  final makd =
+      UserPreferences.normalizeMediaBarMode(mode) ==
+      UserPreferences.mediaBarModeMakd;
+  final peeks = _phone
+      ? makd
+      : previewValue(context, UserPreferences.mediaBarRowPeek) &&
+            UserPreferences.mediaBarModeAllowsRowPeek(mode);
+  if (!peeks || previewValue(context, UserPreferences.fullScreenRows)) {
+    return 0;
+  }
+  if (!_tv && makd) return MakdMetrics(_designSize()).classicPeek;
+  final modern = previewValue(
+    context,
+    UserPreferences.homeRowsStyle,
+  ).usesModernCards;
+  final (poster, thumb) = _sampleCardHeights(context);
+  final firstRowPosters =
+      modern ||
+      _classicRowImageType(context, HomeSectionType.resume) ==
+          ImageType.poster;
+  // The title band's padding and line of text, then the cards' top padding.
+  final header = (modern ? 7.0 : 24.0) + 19.0 + 5.0;
+  return header + (firstRowPosters ? poster : thumb) / 2;
+}
+
+/// The image type a Classic sample row draws, the one picked for that row or
+/// the one every row is set to, as on Home.
+ImageType _classicRowImageType(BuildContext context, HomeSectionType section) =>
+    previewValue(context, UserPreferences.homeRowsUniversalOverride)
+    ? previewValue(context, UserPreferences.homeRowsUniversalImageType)
+    : previewValue(context, UserPreferences.homeRowImageType(section));
+
+Widget _homeRowsColumn(
+  BuildContext context,
+  List<MediaBarSlideItem> items, {
+  required bool modern,
+  bool? carousel,
+  bool focusFirst = false,
+  double? rowGapOverride,
+  bool infoArea = true,
+}) {
+  final l10n = AppLocalizations.of(context);
+  final scale = _rowScale(context);
+  final isCarousel =
+      modern &&
+      (carousel ??
+          previewValue(context, UserPreferences.homeRowsStyle) ==
+              HomeRowsStyle.carousel);
+
+  Widget header(String title) => Padding(
+    padding: modern
+        ? const EdgeInsets.fromLTRB(16, 6, 8, 1)
+        : const EdgeInsets.fromLTRB(16, 16, 8, 8),
+    child: Text(
+      title,
+      style: TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        color: AppColorScheme.onSurface,
+      ),
+    ),
+  );
+
+  Widget focusRing() => Positioned(
+    top: -3.5,
+    bottom: -3.5,
+    left: -3.5,
+    right: -3.5,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius:
+            ThemeRegistry.active.borders.cardRadius + AppRadius.circular(3.5),
+        border: Border.fromBorderSide(
+          ThemeRegistry.active.borders.focusBorder.copyWith(
+            color: Color(
+              previewValue(context, UserPreferences.focusColor).colorValue,
+            ),
+            width: 3.0,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget card(
+    MediaBarSlideItem item, {
+    required double height,
+    required double aspect,
+    String? imageUrl,
+    double? progress,
+    List<PosterBadge> labels = const [],
+    bool focused = false,
+  }) {
+    final width = height * aspect;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            SizedBox(
+              width: width,
+              height: height,
+              child: ClipRRect(
+                borderRadius: ThemeRegistry.active.borders.cardRadius,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _artwork(imageUrl ?? item.posterUrl),
+                    if (labels.isNotEmpty)
+                      Positioned(
+                        top: 6,
+                        left: 6,
+                        child: PosterBadgeSample(
+                          badges: labels,
+                          scale: 0.85 * scale,
+                        ),
+                      ),
+                    if (progress != null)
+                      Positioned(
+                        left: 6,
+                        right: 6,
+                        bottom: 6,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: SizedBox(
+                            height: 6,
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: (progress * 100).round(),
+                                  child: ColoredBox(
+                                    color: AppColorScheme.accent,
+                                  ),
+                                ),
+                                Expanded(
+                                  flex: 100 - (progress * 100).round(),
+                                  child: ColoredBox(
+                                    color: AppColorScheme.scrim.withValues(
+                                      alpha: 0.54,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (focused) focusRing(),
+          ],
+        ),
+        if (!isCarousel) ...[
+          const SizedBox(height: 6),
+          SizedBox(
+            width: width,
+            child: Text(
+              item.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: AppColorScheme.onSurface,
+                shadows: _textShadows,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          if (item.year != null)
+            Text(
+              '${item.year}',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColorScheme.onSurface.withValues(alpha: 0.6),
+                shadows: _textShadows,
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  // The padding sits inside the scroll view and nothing clips, as on the real
+  // row, so a focused card's ring keeps the room around it.
+  Widget cardsRow(List<Widget> cards) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    physics: const NeverScrollableScrollPhysics(),
+    clipBehavior: Clip.none,
+    padding: const EdgeInsets.fromLTRB(16, 5, 20, 5),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < cards.length; i++) ...[
+          if (i > 0) const SizedBox(width: 12),
+          cards[i],
+        ],
+      ],
+    ),
+  );
+
+  final (posterHeight, thumbHeight) = _sampleCardHeights(context);
+  final rowGap = rowGapOverride ?? (modern ? (_phone ? 40.0 : 60.0) : 18.0);
+  final showOverview = !previewValue(
+    context,
+    UserPreferences.hideHomeMediaDescription,
+  );
+
+  // The focused modern card: same height, morphed to 16:9 on the thumb image,
+  // with the focus border and the ratings and overview block it grows below,
+  // spanning wider than the card the way the real extended section does.
+  Widget focusedCard(MediaBarSlideItem item) {
+    final grown = posterHeight * 16 / 9;
+    // A phone caps a grown card at the row's width, the way Home does.
+    final rowWidth = _designSize().width - 32;
+    final width = _phone && grown > rowWidth ? rowWidth : grown;
+    // The ratings and overview run to the end of the row as on Home, and off
+    // TV they stop at twice the card's width.
+    final room = _designSize().width - _rowLeftInset - 20;
+    final detailsWidth = _tv ? room : (width * 2).clamp(0.0, room);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            SizedBox(
+              width: width,
+              height: posterHeight,
+              child: ClipRRect(
+                borderRadius: ThemeRegistry.active.borders.cardRadius,
+                child: _artwork(item.backdropUrl ?? item.posterUrl),
+              ),
+            ),
+            focusRing(),
+          ],
+        ),
+        // Carousel shows all of this in its panel instead.
+        if (!isCarousel) ...[
+          const SizedBox(height: 6),
+          Text(
+            item.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: AppColorScheme.onSurface,
+              shadows: _textShadows,
+            ),
+          ),
+          const SizedBox(height: 2),
+          if (item.year != null)
+            Text(
+              '${item.year}',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColorScheme.onSurface.withValues(alpha: 0.6),
+                shadows: _textShadows,
+              ),
+            ),
+          const SizedBox(height: 4),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              SizedBox(width: width, height: 76),
+              Positioned(
+                left: 0,
+                top: 0,
+                width: detailsWidth,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _sampleRatings(
+                      context,
+                      item,
+                      UserPreferences.homeRowsRatings,
+                      personal: true,
+                      singleLine: !_phone,
+                    ),
+                    if (showOverview && item.overview != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          item.overview!,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1.4,
+                            color: AppColorScheme.onSurface.withValues(
+                              alpha: 0.7,
+                            ),
+                            shadows: _textShadows,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget row(
+    String title, {
+    required HomeSectionType section,
+    int offset = 0,
+    bool withFocus = false,
+  }) {
+    final showLabels = _showSampleLabels(context);
+    final imageType = modern
+        ? ImageType.poster
+        : _classicRowImageType(context, section);
+    final wide = imageType != ImageType.poster;
+    final cards = <Widget>[
+      for (var i = 0; i < 8; i++)
+        if (withFocus && i == 0 && modern)
+          focusedCard(_itemAt(items, offset))
+        else
+          card(
+            _itemAt(items, i + offset),
+            height: wide ? thumbHeight : posterHeight,
+            aspect: switch (imageType) {
+              ImageType.poster => 2 / 3,
+              ImageType.thumb => 16 / 9,
+              ImageType.banner => kBannerAspectRatio,
+            },
+            imageUrl: wide ? _itemAt(items, i + offset).backdropUrl : null,
+            progress: wide && i == 0 ? 0.35 : (wide && i == 1 ? 0.7 : null),
+            // Not every file has both, as in a real library.
+            labels: !showLabels || i % 3 == 2
+                ? const []
+                : (i % 3 == 0 ? _sampleLabels : _sampleLabels.sublist(0, 1)),
+            focused: withFocus && i == 0,
+          ),
+    ];
+    final desktopScale = _desktopScale(context);
+    final panelItem = _itemAt(items, offset);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        header(title),
+        cardsRow(cards),
+        if (isCarousel) ...[
+          SizedBox(height: carouselPanelGap(desktopScale)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 20, 0),
+            child: SizedBox(
+              height: carouselPanelHeight(desktopScale),
+              child: CarouselPanel(
+                item: _slideAsItem(panelItem),
+                desktopScale: desktopScale,
+                backdropUrl: panelItem.backdropUrl,
+                ratings: _sampleRatings(
+                  context,
+                  panelItem,
+                  UserPreferences.homeRowsRatings,
+                  personal: true,
+                  singleLine: !_phone,
+                ),
+                showOverview: showOverview,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // Classic keeps the info overlay band above the rows while Info Overlay is
+  // on, so its preview starts with one. Modern shows its metadata under the
+  // focused card instead.
+  final infoOverlay =
+      infoArea &&
+          !modern &&
+          !_phone &&
+          previewValue(context, UserPreferences.homeRowInfoOverlay)
+      ? Padding(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
+          child: SizedBox(
+            height: InfoArea.fixedHeight(
+              isMobile: false,
+              desktopScale: _desktopScale(context),
+            ),
+            // Right after the UI scale changes, the saved scale can be read
+            // here a frame before the text picks it up, so a column that's
+            // briefly too tall is clipped rather than overflowing.
+            child: SingleChildScrollView(
+              physics: const NeverScrollableScrollPhysics(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    items.first.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      color: AppColorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  _metadataWrap(items.first),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 30,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: _sampleRatings(
+                        context,
+                        items.first,
+                        UserPreferences.homeRowsRatings,
+                        inlineChips: true,
+                      ),
+                    ),
+                  ),
+                  if (showOverview && items.first.overview != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      items.first.overview!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: AppColorScheme.onSurface.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        )
+      : null;
+
+  // Expanded Rows stretches every row to the bottom of the screen, so the
+  // next one starts below it and nothing peeks up.
+  final oneRowPerScreen =
+      !_phone && previewValue(context, UserPreferences.fullScreenRows);
+  return Padding(
+    padding: EdgeInsets.only(left: _rowLeftInset - 16, top: _phone ? 8 : 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ?infoOverlay,
+        row(
+          l10n.continueWatching,
+          section: HomeSectionType.resume,
+          withFocus: focusFirst,
+        ),
+        if (!oneRowPerScreen) ...[
+          SizedBox(height: rowGap),
+          row(
+            l10n.recentlyAdded,
+            section: HomeSectionType.latestMedia,
+            offset: 3,
+          ),
+          SizedBox(height: rowGap),
+          row(l10n.nextUp, section: HomeSectionType.nextUp, offset: 6),
+        ],
+      ],
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Detail screen styles
+// ---------------------------------------------------------------------------
+
+Widget detailStylePreview(DetailScreenStyle style) => _liveOrFallback(
+  live: (context, shown) {
+    final items =
+        previewValue(context, UserPreferences.hideDetailsMediaDescription)
+        ? [for (final item in shown) item.withoutOverview()]
+        : shown;
+    return switch (style) {
+      DetailScreenStyle.classic => _classicDetail(context, items),
+      DetailScreenStyle.modern => _modernDetail(context, items.first),
+      DetailScreenStyle.spotlight => _spotlightDetail(context, items.first),
+      DetailScreenStyle.nouveau => _nouveauDetail(context, items),
+      DetailScreenStyle.minimalist => _minimalistDetail(context, items.first),
+      DetailScreenStyle.stage => _stageDetail(context, items.first),
+      DetailScreenStyle.premiere => _premiereDetail(context, items.first),
+      DetailScreenStyle.quickLook => _quickLookDetail(context, items),
+      DetailScreenStyle.frost => _frostDetail(context, items.first),
+    };
+  },
+  fallback: _fallbackDetail(style),
+);
+
+/// Buttons a movie's details row can carry, standing in for whatever the
+/// title on screen would offer.
+const _sampleDetailButtons = [
+  DetailButton.audio,
+  DetailButton.subtitles,
+  DetailButton.trailer,
+  DetailButton.watched,
+  DetailButton.favorite,
+  DetailButton.personalRating,
+  DetailButton.playlist,
+];
+
+/// The buttons after Play as the Detail Buttons settings have them on this
+/// kind of device, in their order, without the hidden ones, and cut to the
+/// number on screen with More holding the rest. [auto] is how many the style
+/// fits when that number is left on Auto. Styles whose More is a menu fold as
+/// soon as the number is reached, the others keep a last button that would
+/// only have been swapped for More.
+List<(IconData, String)> _detailButtons(
+  BuildContext context, {
+  required int auto,
+  bool menu = true,
+}) {
+  final l10n = AppLocalizations.of(context);
+  final prefs = GetIt.instance<UserPreferences>();
+  final hidden = detailButtonLayout.hidden(prefs);
+  final shown = [
+    for (final button in detailButtonLayout.ordered(
+      _sampleDetailButtons,
+      (button) => button.id,
+      prefs,
+    ))
+      if (!hidden.contains(button.id)) button,
+  ];
+  final limit = previewValue(context, UserPreferences.detailButtonsMaxVisible);
+  final visible = switch (limit) {
+    -1 => shown.length,
+    > 0 when !menu && shown.length <= limit => shown.length,
+    > 0 => limit - 1,
+    _ => auto,
+  };
+  return [
+    for (final button in shown.take(visible)) (button.icon, button.label(l10n)),
+    if (shown.length > visible) (Icons.more_horiz_rounded, l10n.more),
+  ];
+}
+
+/// A movie's metadata line in the order the Detail Metadata settings put it,
+/// without the entries they switch off. Status, the next episode and Seerr
+/// only show on series and requests, so a movie has none of them.
+List<(DetailMetadataItem, String)> _detailMeta(
+  MediaBarSlideItem item, {
+  String genreJoin = ' • ',
+}) {
+  final prefs = GetIt.instance<UserPreferences>();
+  final hidden = detailMetadataLayout.hidden(prefs);
+  String? textOf(DetailMetadataItem entry) => switch (entry) {
+    DetailMetadataItem.year => item.year?.toString(),
+    DetailMetadataItem.parentalRating => item.officialRating,
+    DetailMetadataItem.runtimeAndSeasons =>
+      item.runtime == null ? null : _runtimeText(item.runtime),
+    DetailMetadataItem.genres =>
+      item.genres.isEmpty ? null : item.genres.take(3).join(genreJoin),
+    _ => null,
+  };
+  return [
+    for (final entry in detailMetadataLayout.ordered(
+      DetailMetadataItem.values,
+      (entry) => entry.id,
+      prefs,
+    ))
+      if (!hidden.contains(entry.id))
+        if (textOf(entry) case final text?) (entry, text),
+  ];
+}
+
+/// The metadata line Modern and Spotlight share, with a clock on the runtime.
+Widget _modernDetailMeta(MediaBarSlideItem item) {
+  final style = TextStyle(
+    fontSize: 14,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.75),
+  );
+  return Wrap(
+    spacing: 8,
+    runSpacing: 6,
+    crossAxisAlignment: WrapCrossAlignment.center,
+    children: [
+      for (final (i, (entry, text)) in _detailMeta(
+        item,
+        genreJoin: ' · ',
+      ).indexed) ...[
+        if (i > 0) Text('·', style: style),
+        if (entry == DetailMetadataItem.runtimeAndSeasons)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.schedule, size: 14, color: style.color),
+              const SizedBox(width: 4),
+              Text(text, style: style),
+            ],
+          )
+        else
+          Text(text, style: style),
+      ],
+    ],
+  );
+}
+
+/// Sample stream chips under the metadata line while Technical Details is on.
+List<Widget> _techChips(BuildContext context, {double gap = 6}) {
+  if (!previewValue(context, UserPreferences.detailShowTechnicalDetails)) {
+    return const [];
+  }
+  return [
+    SizedBox(height: gap),
+    Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        for (final label in const ['4K', 'HDR', '5.1'])
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              border: Border.fromBorderSide(
+                ThemeRegistry.active.borders.chipBorder.copyWith(
+                  color: Colors.white.withValues(alpha: 0.3),
+                ),
+              ),
+              borderRadius: AppRadius.circular(4),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColorScheme.onSurface,
+              ),
+            ),
+          ),
+      ],
+    ),
+  ];
+}
+
+/// The details backdrop as its settings draw it: left out when it's switched
+/// off, and shown whole under the toolbar when a phone has Backdrop Size on Fit.
+Widget _detailBackdrop(BuildContext context, Widget art) =>
+    previewValue(context, UserPreferences.detailsBackdropEnabled)
+    ? DetailBackdropFit(
+        prefs: GetIt.instance<UserPreferences>(),
+        fits:
+            _phone &&
+            previewValue(context, UserPreferences.detailsBackdropSize) ==
+                UserPreferences.detailsBackdropFit,
+        child: art,
+      )
+    : const SizedBox.shrink();
+
+/// The details background setting from 0 to 1. Classic blurs its backdrop by
+/// it and every other style dims its backdrop by it instead.
+double _detailBackgroundAmount(BuildContext context) =>
+    previewValue(
+      context,
+      UserPreferences.detailsBackgroundBlurAmount,
+    ).clamp(0, 25) /
+    25.0;
+
+Widget _detailCircleButton(IconData icon, double diameter) => Container(
+  width: diameter,
+  height: diameter,
+  decoration: BoxDecoration(
+    shape: BoxShape.circle,
+    color: Colors.white.withValues(alpha: 0.06),
+    border: Border.all(
+      color: AppColorScheme.onSurface.withValues(alpha: 0.35),
+      width: 1.5,
+    ),
+  ),
+  child: Icon(icon, size: 24, color: AppColorScheme.onSurface),
+);
+
+Widget _detailPlayPill(BuildContext context, {required bool landscape}) {
+  final l10n = AppLocalizations.of(context);
+  return Container(
+    height: landscape ? 54 : 50,
+    constraints: landscape ? const BoxConstraints(minWidth: 200) : null,
+    width: landscape ? null : double.infinity,
+    padding: const EdgeInsets.only(left: 10, right: 14),
+    decoration: BoxDecoration(
+      color: AppColorScheme.accent,
+      borderRadius: BorderRadius.circular(landscape ? 27 : 25),
+    ),
+    child: Row(
+      mainAxisSize: landscape ? MainAxisSize.min : MainAxisSize.max,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.play_arrow_rounded,
+          size: 24,
+          color: AppColorScheme.onAccent,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          l10n.play,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            height: 1.1,
+            color: AppColorScheme.onAccent,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Play beside its circle buttons in landscape, or above them in portrait,
+/// where they spread across the width unless [gap] spaces them.
+List<Widget> _detailActionRow(
+  BuildContext context, {
+  required bool landscape,
+  required List<(IconData, String)> buttons,
+  double? gap,
+}) {
+  final circles = [
+    for (final (icon, _) in buttons)
+      _detailCircleButton(icon, landscape ? 52 : 48),
+  ];
+  if (landscape) {
+    return [
+      Wrap(
+        spacing: gap ?? 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [_detailPlayPill(context, landscape: true), ...circles],
+      ),
+    ];
+  }
+  return [
+    _detailPlayPill(context, landscape: false),
+    const SizedBox(height: 12),
+    if (gap == null)
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: circles)
+    else
+      Wrap(spacing: gap, runSpacing: gap, children: circles),
+  ];
+}
+
+/// The backdrop, scrims, and hero placement shared by the modern and
+/// spotlight detail previews.
+Widget _detailPreviewScaffold(
+  BuildContext context, {
+  required MediaBarSlideItem item,
+  required bool landscape,
+  required Widget hero,
+}) {
+  final base = AppColorScheme.background;
+  final amount = _detailBackgroundAmount(context);
+  final gradientScale = 0.3 + 0.7 * amount;
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      ColoredBox(color: base),
+      _detailBackdrop(
+        context,
+        _artwork(
+          item.backdropUrl,
+          alignment: landscape ? Alignment.centerRight : Alignment.topCenter,
+        ),
+      ),
+      ColoredBox(color: Colors.black.withValues(alpha: 0.8 * amount)),
+      if (landscape) ...[
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [
+                base.withValues(alpha: 1.0 * gradientScale),
+                base.withValues(alpha: 0.90 * gradientScale),
+                base.withValues(alpha: 0.45 * gradientScale),
+                base.withValues(alpha: 0.0),
+              ],
+              stops: const [0.0, 0.35, 0.60, 0.85],
+            ),
+          ),
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [
+                base.withValues(alpha: 1.0 * gradientScale),
+                base.withValues(alpha: 0.80 * gradientScale),
+                base.withValues(alpha: 0.0),
+              ],
+              stops: const [0.0, 0.45, 0.80],
+            ),
+          ),
+        ),
+      ] else
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                base.withValues(alpha: 0.15 * gradientScale),
+                base.withValues(alpha: 0.45 * gradientScale),
+                base.withValues(alpha: 0.85 * gradientScale),
+              ],
+              stops: const [0.0, 0.55, 1.0],
+            ),
+          ),
+        ),
+      ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          maxHeight: double.infinity,
+          child: landscape
+              ? Padding(
+                  padding: EdgeInsets.fromLTRB(40, _tv ? 71 : 68, 40, 0),
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: SizedBox(
+                      width: (_designSize().width * 0.85).clamp(450.0, 1100.0),
+                      child: hero,
+                    ),
+                  ),
+                )
+              : Padding(
+                  padding: EdgeInsets.only(
+                    left: 20,
+                    right: 20,
+                    top: _designSize().height * 0.26 + 60,
+                  ),
+                  child: hero,
+                ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _detailActionTile(
+  IconData icon,
+  String label, {
+  required double cell,
+  required double box,
+  required double radius,
+  required double iconSize,
+}) {
+  return SizedBox(
+    width: cell,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: box,
+          height: box,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(radius),
+          ),
+          child: Icon(icon, size: iconSize, color: AppColorScheme.onSurface),
+        ),
+        SizedBox(height: box > 50 ? 8 : 6),
+        Text(
+          label,
+          maxLines: 2,
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppColorScheme.onSurface,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _castPlaceholderRow({required double avatarRadius}) {
+  return SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    physics: const NeverScrollableScrollPhysics(),
+    child: Row(
+      children: [
+        for (var i = 0; i < 8; i++)
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: avatarRadius * 2,
+                  height: avatarRadius * 2,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: AppColorScheme.onSurface.withValues(alpha: 0.12),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: avatarRadius * 1.6,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: AppColorScheme.onSurface.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+Widget _classicDetail(BuildContext context, List<MediaBarSlideItem> items) {
+  final item = items.first;
+  final l10n = AppLocalizations.of(context);
+  final desktopLayout = !_phone;
+
+  final poster = Container(
+    width: desktopLayout ? 165.0 : 120.0,
+    height: desktopLayout ? 248.0 : 180.0,
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
+    clipBehavior: Clip.antiAlias,
+    child: _artwork(item.posterUrl),
+  );
+
+  final metaStyle = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w700,
+    color: Colors.white.withValues(alpha: 0.9),
+    shadows: _textShadows,
+  );
+  final meta = Wrap(
+    alignment: desktopLayout ? WrapAlignment.start : WrapAlignment.center,
+    crossAxisAlignment: WrapCrossAlignment.center,
+    spacing: 2,
+    runSpacing: 4,
+    children: [
+      for (final (i, (entry, text)) in _detailMeta(item).indexed) ...[
+        if (i > 0)
+          Text(
+            ' • ',
+            style: metaStyle.copyWith(
+              color: Colors.white.withValues(alpha: 0.5),
+            ),
+          ),
+        if (entry == DetailMetadataItem.parentalRating)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(text, style: metaStyle.copyWith(fontSize: 11)),
+          )
+        else
+          Text(text, style: metaStyle),
+      ],
+    ],
+  );
+
+  final overview = item.overview == null
+      ? const SizedBox.shrink()
+      : Text(
+          item.overview!,
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+          textAlign: desktopLayout ? TextAlign.start : TextAlign.center,
+          style: TextStyle(
+            fontSize: desktopLayout ? 14 : 13,
+            height: 1.4,
+            color: Colors.white.withValues(alpha: 0.8),
+            shadows: _textShadows,
+          ),
+        );
+
+  final titleBlock = _logoOrTitle(
+    item,
+    width: desktopLayout ? 350 : 240,
+    height: desktopLayout ? 80 : 56,
+    alignment: desktopLayout ? Alignment.bottomLeft : Alignment.bottomCenter,
+    fallbackStyle: TextStyle(
+      fontSize: desktopLayout ? 32 : 24,
+      fontWeight: FontWeight.bold,
+      color: Colors.white,
+      shadows: _textShadows,
+    ),
+  );
+
+  final cell = desktopLayout ? 108.0 : 80.0;
+  final box = desktopLayout ? 58.0 : 44.0;
+  final tileRadius = desktopLayout ? 15.0 : 14.0;
+  final tileIcon = desktopLayout ? 27.0 : 22.0;
+  final buttons = Wrap(
+    alignment: WrapAlignment.center,
+    spacing: desktopLayout ? 8 : 4,
+    runSpacing: desktopLayout ? 12 : 10,
+    children: [
+      for (final (icon, label) in [
+        (Icons.play_arrow_rounded, l10n.play),
+        ..._detailButtons(context, auto: 4, menu: false),
+      ])
+        _detailActionTile(
+          icon,
+          label,
+          cell: cell,
+          box: box,
+          radius: tileRadius,
+          iconSize: tileIcon,
+        ),
+    ],
+  );
+
+  final infoColumn = Column(
+    crossAxisAlignment: desktopLayout
+        ? CrossAxisAlignment.start
+        : CrossAxisAlignment.center,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      titleBlock,
+      const SizedBox(height: 12),
+      meta,
+      ..._techChips(context),
+      const SizedBox(height: 8),
+      _sampleRatings(
+        context,
+        item,
+        UserPreferences.detailsRatings,
+        personal: true,
+      ),
+      const SizedBox(height: 8),
+      overview,
+    ],
+  );
+
+  final blur = previewValue(
+    context,
+    UserPreferences.detailsBackgroundBlurAmount,
+  ).toDouble();
+  final sigma = blur > 0 ? GlassSettings.decorativeSigma(blur) : 0.0;
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      if (item.backdropUrl != null)
+        _detailBackdrop(
+          context,
+          sigma > 0
+              ? ImageFiltered(
+                  imageFilter: ui.ImageFilter.blur(
+                    sigmaX: sigma,
+                    sigmaY: sigma,
+                  ),
+                  child: _artwork(item.backdropUrl),
+                )
+              : _artwork(item.backdropUrl),
+        ),
+      const DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xCC000000), Color(0x66000000), Color(0xCC000000)],
+            stops: [0.0, 0.3, 1.0],
+          ),
+        ),
+      ),
+      ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          maxHeight: double.infinity,
+          child: Column(
+            children: [
+              Padding(
+                padding: desktopLayout
+                    ? const EdgeInsets.fromLTRB(48, 60, 48, 16)
+                    : const EdgeInsets.fromLTRB(16, 40, 16, 12),
+                child: desktopLayout
+                    ? Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(child: infoColumn),
+                          const SizedBox(width: 32),
+                          poster,
+                        ],
+                      )
+                    : Column(
+                        children: [
+                          poster,
+                          const SizedBox(height: 16),
+                          infoColumn,
+                        ],
+                      ),
+              ),
+              buttons,
+              const SizedBox(height: 32),
+              Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: desktopLayout ? 48 : 16,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l10n.cast,
+                      style: TextStyle(
+                        fontSize: desktopLayout ? 20 : 17,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        shadows: _textShadows,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _castPlaceholderRow(avatarRadius: desktopLayout ? 45 : 35),
+                    const SizedBox(height: 32),
+                    Text(
+                      l10n.moreLikeThis,
+                      style: TextStyle(
+                        fontSize: desktopLayout ? 20 : 17,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        shadows: _textShadows,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const NeverScrollableScrollPhysics(),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (var i = 1; i < 8; i++)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: desktopLayout ? 150 : 120,
+                                    child: AspectRatio(
+                                      aspectRatio: 2 / 3,
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: _artwork(
+                                          _itemAt(items, i).posterUrl,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SizedBox(
+                                    width: desktopLayout ? 150 : 120,
+                                    child: Text(
+                                      _itemAt(items, i).title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        shadows: _textShadows,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _modernDetail(BuildContext context, MediaBarSlideItem item) {
+  final l10n = AppLocalizations.of(context);
+  final landscape = !_phone;
+  // Collapsed tabs open with none picked and nothing under them.
+  final expandedTabs = previewValue(
+    context,
+    UserPreferences.detailExpandedTabs,
+  );
+
+  Widget pillTab(String label, {bool selected = false}) => Container(
+    height: 38,
+    padding: const EdgeInsets.symmetric(horizontal: 15),
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      color: selected ? AppColorScheme.accent : null,
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        fontSize: 13,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+        color: selected
+            ? AppColorScheme.onAccent
+            : AppColorScheme.onSurface.withValues(alpha: 0.75),
+      ),
+    ),
+  );
+
+  final tabBar = SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    physics: const NeverScrollableScrollPhysics(),
+    child: Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppColorScheme.onSurface.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          pillTab(l10n.cast, selected: expandedTabs),
+          pillTab(l10n.studios),
+          pillTab(l10n.chapters),
+          pillTab(l10n.details),
+          if (landscape) pillTab(l10n.moreLikeThis),
+        ],
+      ),
+    ),
+  );
+
+  final hero = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _logoOrTitle(
+        item,
+        width: landscape ? 300 : 260,
+        height: landscape ? 75 : 64,
+        fallbackStyle: TextStyle(
+          fontSize: landscape ? 34 : 26,
+          fontWeight: FontWeight.w700,
+          color: AppColorScheme.onSurface,
+        ),
+      ),
+      const SizedBox(height: 10),
+      _modernDetailMeta(item),
+      ..._techChips(context),
+      const SizedBox(height: 6),
+      _sampleRatings(
+        context,
+        item,
+        UserPreferences.detailsRatings,
+        personal: true,
+      ),
+      if (item.overview != null) ...[
+        const SizedBox(height: 8),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: Text(
+            item.overview!,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.45,
+              color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 24),
+      ..._detailActionRow(
+        context,
+        landscape: landscape,
+        buttons: _detailButtons(context, auto: landscape ? 2 : 3, menu: false),
+      ),
+      SizedBox(height: landscape ? 16 : 24),
+      tabBar,
+      if (expandedTabs) ...[
+        SizedBox(height: landscape ? 8 : 12),
+        _castPlaceholderRow(avatarRadius: landscape ? 45 : 35),
+      ],
+    ],
+  );
+
+  return _detailPreviewScaffold(
+    context,
+    item: item,
+    landscape: landscape,
+    hero: hero,
+  );
+}
+
+/// An all-caps genre line above an oversized title, then a section rail
+/// stacked under the actions where Modern puts tabs and Spotlight puts
+/// summary cards. Takes the whole list so the rail has real artwork.
+
+/// Artwork, the title, Play with the few buttons beside it, and the episodes.
+/// The preview leaves out everything the real screen does, which is the point
+/// of it.
+Widget _minimalistDetail(BuildContext context, MediaBarSlideItem item) {
+  final landscape = !_phone;
+  final cardWidth = landscape ? 96.0 : 74.0;
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      _detailBackdrop(context, _artwork(item.backdropUrl)),
+      ColoredBox(
+        color: AppColors.black.withValues(
+          alpha: 0.35 + 0.5 * _detailBackgroundAmount(context),
+        ),
+      ),
+      Padding(
+        padding: EdgeInsets.fromLTRB(landscape ? 22 : 14, 0, 14, landscape ? 18 : 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Text(
+              item.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: landscape ? 26 : 20,
+                fontWeight: FontWeight.w700,
+                color: AppColorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Container(
+                  width: landscape ? 84 : 70,
+                  height: landscape ? 30 : 26,
+                  decoration: BoxDecoration(
+                    color: AppColorScheme.accent,
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                ),
+                for (final (icon, _) in _detailButtons(
+                  context,
+                  auto: landscape ? 4 : 3,
+                ))
+                  Container(
+                    width: landscape ? 30 : 26,
+                    height: landscape ? 30 : 26,
+                    decoration: BoxDecoration(
+                      color: AppColorScheme.onSurface.withValues(alpha: 0.18),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      icon,
+                      size: landscape ? 16 : 14,
+                      color: AppColorScheme.onSurface,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              spacing: 8,
+              children: [
+                for (var i = 0; i < 3; i++)
+                  Container(
+                    width: cardWidth,
+                    height: cardWidth * 9 / 16,
+                    decoration: BoxDecoration(
+                      color: AppColorScheme.onSurface.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+/// The poster on the left with play and the circles under it and the title,
+/// ratings and tracks beside it, or the same parts stacked under a centered
+/// poster on a phone.
+Widget _stageDetail(BuildContext context, MediaBarSlideItem item) {
+  final l10n = AppLocalizations.of(context);
+  final landscape = !_phone;
+  final posterWidth = landscape ? 258.0 : 160.0;
+  final buttons = _detailButtons(context, auto: 3);
+
+  final poster = SizedBox(
+    width: posterWidth,
+    child: AspectRatio(
+      aspectRatio: 2 / 3,
+      child: ClipRRect(
+        borderRadius: AppRadius.circular(8),
+        child: _artwork(item.posterUrl ?? item.backdropUrl),
+      ),
+    ),
+  );
+  final tracks = Wrap(
+    spacing: 8,
+    runSpacing: 8,
+    children: [
+      for (final label in [l10n.audio, l10n.subtitles])
+        Container(
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: AppColorScheme.onSurface.withValues(alpha: 0.22),
+            ),
+          ),
+          child: Center(
+            widthFactor: 1,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: AppColorScheme.onSurface.withValues(alpha: 0.75),
+              ),
+            ),
+          ),
+        ),
+    ],
+  );
+  final text = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _logoOrTitle(
+        item,
+        width: landscape ? 400 : 300,
+        height: landscape ? 110 : 72,
+        alignment: landscape ? Alignment.topLeft : Alignment.bottomLeft,
+        fallbackStyle: TextStyle(
+          fontSize: landscape ? 42 : 28,
+          fontWeight: FontWeight.w700,
+          color: AppColorScheme.onSurface,
+        ),
+      ),
+      const SizedBox(height: 10),
+      _modernDetailMeta(item),
+      ..._techChips(context),
+      const SizedBox(height: 8),
+      _sampleRatings(
+        context,
+        item,
+        UserPreferences.detailsRatings,
+        personal: true,
+      ),
+      if (item.overview != null) ...[
+        const SizedBox(height: 10),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: Text(
+            item.overview!,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.45,
+              color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 16),
+      tracks,
+    ],
+  );
+
+  final page = landscape
+      ? Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: posterWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  poster,
+                  const SizedBox(height: 18),
+                  _detailPlayPill(context, landscape: true),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final (icon, _) in buttons)
+                        _detailCircleButton(icon, 52),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 44),
+            Expanded(child: text),
+          ],
+        )
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(child: poster),
+            const SizedBox(height: 20),
+            text,
+            const SizedBox(height: 20),
+            ..._detailActionRow(context, landscape: false, buttons: buttons),
+          ],
+        );
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      _detailBackdrop(context, _artwork(item.backdropUrl)),
+      ColoredBox(
+        color: AppColors.black.withValues(
+          alpha: 0.55 + 0.3 * _detailBackgroundAmount(context),
+        ),
+      ),
+      ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          maxHeight: double.infinity,
+          child: Padding(
+            padding: landscape
+                ? const EdgeInsets.fromLTRB(53, 100, 53, 0)
+                : const EdgeInsets.fromLTRB(20, 100, 20, 0),
+            child: page,
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// The title centered over a backdrop that fills the preview with play and
+/// the circles under it, then the ratings where the page's sections start
+/// and on a TV a hint that the page runs on.
+Widget _premiereDetail(BuildContext context, MediaBarSlideItem item) {
+  final landscape = !_phone;
+  final base = AppColorScheme.background;
+  final meta = [for (final (_, text) in _detailMeta(item)) text].join(' • ');
+  final buttons = _detailButtons(context, auto: 4);
+  final titleStyle = TextStyle(
+    fontSize: landscape ? 56 : 32,
+    fontWeight: FontWeight.w700,
+    letterSpacing: landscape ? 4 : 2,
+    color: AppColorScheme.onSurface,
+  );
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      ColoredBox(color: base),
+      _detailBackdrop(
+        context,
+        _artwork(item.backdropUrl, alignment: Alignment.topCenter),
+      ),
+      DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [
+              base,
+              base.withValues(
+                alpha: 0.6 + 0.3 * _detailBackgroundAmount(context),
+              ),
+              base.withValues(alpha: 0),
+            ],
+            stops: const [0.05, 0.5, 0.85],
+          ),
+        ),
+      ),
+      Padding(
+        padding: landscape
+            ? const EdgeInsets.fromLTRB(100, 0, 100, 16)
+            : const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (item.logoUrl != null)
+              _logoOrTitle(
+                item,
+                width: landscape ? 580 : 320,
+                height: landscape ? 150 : 90,
+                alignment: Alignment.bottomCenter,
+                fallbackStyle: titleStyle,
+              )
+            else
+              Text(
+                item.title.toUpperCase(),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: titleStyle,
+              ),
+            if (meta.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                meta,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppColorScheme.onSurface,
+                ),
+              ),
+            ],
+            if (item.overview != null) ...[
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 840),
+                child: Text(
+                  item.overview!,
+                  textAlign: TextAlign.center,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    color: AppColorScheme.onSurface.withValues(alpha: 0.82),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 22),
+            if (landscape)
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _detailPlayPill(context, landscape: true),
+                  for (final (icon, _) in buttons)
+                    _detailCircleButton(icon, 52),
+                ],
+              )
+            else
+              ..._detailActionRow(context, landscape: false, buttons: buttons),
+            const SizedBox(height: 22),
+            _sampleRatings(
+              context,
+              item,
+              UserPreferences.detailsRatings,
+              personal: true,
+              singleLine: true,
+            ),
+            if (_tv) ...[
+              const SizedBox(height: 10),
+              Icon(
+                Icons.keyboard_arrow_down,
+                size: 32,
+                color: AppColorScheme.onSurface.withValues(alpha: 0.65),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+/// The art blurred behind a glass window that holds it sharp, with the
+/// toolbar over its foot and the tab bar under it, laid out on the same stage
+/// as the real page. A phone gets the glass sheet over the art with the
+/// buttons in a capsule.
+Widget _frostDetail(BuildContext context, MediaBarSlideItem item) {
+  final l10n = AppLocalizations.of(context);
+  final buttons = _detailButtons(context, auto: 4);
+  final meta = _modernDetailMeta(item);
+  const glass = Color(0xE6303036);
+  const muted = Color(0x99EBEBF5);
+
+  Widget playPill({required bool phone}) => Container(
+    height: phone ? 48 : 60,
+    constraints: BoxConstraints(minWidth: phone ? 140 : 200),
+    padding: EdgeInsets.symmetric(horizontal: phone ? 20 : 28),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: 0.86),
+      borderRadius: BorderRadius.circular(phone ? 24 : 30),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.play_arrow, size: 22, color: Colors.black),
+        const SizedBox(width: 8),
+        Text(
+          l10n.play,
+          style: TextStyle(
+            fontSize: phone ? 17 : 19,
+            fontWeight: FontWeight.w600,
+            color: Colors.black,
+          ),
+        ),
+      ],
+    ),
+  );
+  final circles = [
+    for (final (icon, _) in buttons)
+      SizedBox.square(
+        dimension: _phone ? 46 : 60,
+        child: Icon(icon, size: _phone ? 22 : 25, color: Colors.white),
+      ),
+  ];
+  final ratings = _sampleRatings(
+    context,
+    item,
+    UserPreferences.detailsRatings,
+    personal: true,
+    columns: true,
+    columnTextScale: _phone ? 1 : 1.3,
+  );
+  final showArt = previewValue(context, UserPreferences.detailsBackdropEnabled);
+  final environment = [
+    if (showArt)
+      ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+        child: _artwork(item.backdropUrl),
+      ),
+    ColoredBox(color: AppColors.black.withValues(alpha: 0.55)),
+  ];
+
+  if (_phone) {
+    final height = _designSize().height;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ...environment,
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          height: height * 0.62,
+          child: ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) => const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.white, Colors.white, Colors.transparent],
+              stops: [0, 0.62, 1],
+            ).createShader(rect),
+            child: showArt
+                ? _artwork(item.backdropUrl, alignment: Alignment.topCenter)
+                : const SizedBox.shrink(),
+          ),
+        ),
+        Positioned(
+          top: height * 0.42,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+            decoration: const BoxDecoration(
+              color: Color(0xE61E1E22),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(38)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(child: _bar(36, 5, const Color(0x52FFFFFF))),
+                const SizedBox(height: 14),
+                Text(
+                  item.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 30,
+                    height: 1.13,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                meta,
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: const Color(0x14FFFFFF),
+                    borderRadius: BorderRadius.circular(19),
+                  ),
+                  child: Row(
+                    spacing: 2,
+                    children: [
+                      for (final (index, label) in [
+                        l10n.overview,
+                        l10n.cast,
+                        l10n.similar,
+                        l10n.details,
+                      ].indexed)
+                        Expanded(
+                          child: Container(
+                            height: 32,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: index == 0
+                                  ? const Color(0x33FFFFFF)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: index == 0 ? Colors.white : muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: const BoxDecoration(
+                    border: Border.symmetric(
+                      horizontal: BorderSide(
+                        color: Color(0x29FFFFFF),
+                        width: 0.5,
+                      ),
+                    ),
+                  ),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    physics: const NeverScrollableScrollPhysics(),
+                    child: ratings,
+                  ),
+                ),
+                if (item.overview != null) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    item.overview!,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      height: 1.38,
+                      color: Color(0xE0FFFFFF),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 12,
+          child: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: const Color(0xE63A3A40),
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(width: double.infinity, child: playPill(phone: true)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: circles,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  final tabs = [
+    (Icons.smart_display_outlined, l10n.overview),
+    (Icons.people_outline, l10n.castAndCrew),
+    (Icons.grid_view, l10n.moreLikeThis),
+    (Icons.info_outline, l10n.details),
+  ];
+  final window = ClipRRect(
+    borderRadius: AppRadius.circular(44),
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: Color(0x5C1C1C20)),
+        if (showArt) _artwork(item.backdropUrl),
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Color(0xF20C0C0E), Color(0xBD0C0C0E), Color(0x000C0C0E)],
+              stops: [0, 0.5, 0.8],
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(56, 0, 56, 50),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text(
+                item.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 64,
+                  height: 1.1,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -1.6,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
+              meta,
+              const SizedBox(height: 14),
+              Container(
+                height: 100,
+                decoration: const BoxDecoration(
+                  border: Border.symmetric(
+                    horizontal: BorderSide(color: Color(0x24FFFFFF)),
+                  ),
+                ),
+                child: ratings,
+              ),
+              if (item.overview != null) ...[
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: 744,
+                  child: Text(
+                    item.overview!,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      height: 1.44,
+                      color: Color(0xE6FFFFFF),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      ...environment,
+      LayoutBuilder(
+        builder: (context, constraints) => FittedBox(
+          child: SizedBox.fromSize(
+            size: frostStageSize(constraints),
+            child: Stack(
+              children: [
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  top: 12,
+                  bottom: 146,
+                  child: window,
+                ),
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: 106,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: glass,
+                        borderRadius: BorderRadius.circular(38),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          playPill(phone: false),
+                          const SizedBox(width: 6),
+                          ...circles,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: 36,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: glass,
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        spacing: 4,
+                        children: [
+                          for (final (index, (icon, label)) in tabs.indexed)
+                            Container(
+                              height: 48,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 18,
+                              ),
+                              decoration: BoxDecoration(
+                                color: index == 0
+                                    ? const Color(0x29FFFFFF)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(24),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(icon, size: 22, color: Colors.white),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    label,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+/// The drawer down the right over a dimmed row of titles, or the sheet up
+/// from the foot of a phone, with the backdrop, the title, its ratings, play
+/// and the circles, and Open full page at its foot.
+Widget _quickLookDetail(BuildContext context, List<MediaBarSlideItem> items) {
+  final l10n = AppLocalizations.of(context);
+  final landscape = !_phone;
+  final item = items.first;
+  final meta = [for (final (_, text) in _detailMeta(item)) text].join(' · ');
+  final buttons = _detailButtons(context, auto: 4);
+  final surface = Color.alphaBlend(
+    AppColorScheme.onSurface.withValues(alpha: 0.03),
+    AppColorScheme.background,
+  );
+  final inset = landscape ? 28.0 : 20.0;
+  final showArt = previewValue(context, UserPreferences.detailsBackdropEnabled);
+
+  final panel = ColoredBox(
+    color: surface,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (landscape && !showArt)
+          const SizedBox(height: 64)
+        else if (landscape)
+          SizedBox(
+            height: 230,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _artwork(item.backdropUrl, alignment: Alignment.topCenter),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [surface.withValues(alpha: 0), surface],
+                      stops: const [0.4, 1],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 14),
+            child: Center(
+              child: _bar(
+                36,
+                5,
+                AppColorScheme.onSurface.withValues(alpha: 0.3),
+              ),
+            ),
+          ),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: inset),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: landscape ? 30 : 26,
+                  height: 1.15,
+                  fontWeight: FontWeight.w700,
+                  color: AppColorScheme.onSurface,
+                ),
+              ),
+              if (meta.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  meta,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColorScheme.onSurface,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              _sampleRatings(
+                context,
+                item,
+                UserPreferences.detailsRatings,
+                personal: true,
+                labels: false,
+              ),
+              const SizedBox(height: 16),
+              ..._detailActionRow(
+                context,
+                landscape: landscape,
+                buttons: buttons,
+              ),
+              if (item.overview != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  item.overview!,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    color: AppColorScheme.onSurface.withValues(alpha: 0.82),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const Spacer(),
+        Container(
+          height: 50,
+          margin: EdgeInsets.fromLTRB(inset, 8, inset, 24),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(25),
+            border: Border.all(
+              color: AppColorScheme.onSurface.withValues(alpha: 0.25),
+            ),
+          ),
+          child: Text(
+            l10n.quickLookOpenFullPage,
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: AppColorScheme.onSurface,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      ColoredBox(color: AppColorScheme.background),
+      Padding(
+        padding: const EdgeInsets.all(40),
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: Row(
+            spacing: 14,
+            children: [
+              for (final shown in items.take(landscape ? 5 : 2))
+                Expanded(
+                  child: AspectRatio(
+                    aspectRatio: 2 / 3,
+                    child: ClipRRect(
+                      borderRadius: AppRadius.circular(10),
+                      child: _artwork(shown.posterUrl ?? shown.backdropUrl),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      ColoredBox(color: AppColors.black.withValues(alpha: 0.62)),
+      Align(
+        alignment: landscape ? Alignment.centerRight : Alignment.bottomCenter,
+        child: FractionallySizedBox(
+          widthFactor: landscape ? 0.5 : 1,
+          heightFactor: landscape ? 1 : 0.8,
+          child: ClipRRect(
+            borderRadius: landscape
+                ? BorderRadius.zero
+                : const BorderRadius.vertical(top: Radius.circular(28)),
+            child: panel,
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _nouveauDetail(BuildContext context, List<MediaBarSlideItem> items) {
+  final l10n = AppLocalizations.of(context);
+  final item = items.first;
+  final landscape = !_phone;
+
+  final metaStyle = TextStyle(
+    fontSize: 14,
+    color: AppColorScheme.onSurface.withValues(alpha: 0.75),
+  );
+
+  // Genres sit in the eyebrow above the title, so they are left out here
+  // rather than repeated, and hiding them hides the eyebrow.
+  final detailMeta = _detailMeta(item);
+  final showGenres = detailMeta.any(
+    (part) => part.$1 == DetailMetadataItem.genres,
+  );
+  final metaParts = [
+    for (final (entry, text) in detailMeta)
+      if (entry != DetailMetadataItem.genres) text,
+  ];
+
+  final meta = Wrap(
+    spacing: 8,
+    runSpacing: 6,
+    crossAxisAlignment: WrapCrossAlignment.center,
+    children: [
+      for (final (index, part) in metaParts.indexed) ...[
+        if (index > 0) Text('·', style: metaStyle),
+        Text(part, style: metaStyle),
+      ],
+    ],
+  );
+
+  final railPosterWidth = landscape ? 92.0 : 74.0;
+
+  final rail = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(
+        l10n.moreLikeThis,
+        style: TextStyle(
+          fontSize: landscape ? 22 : 18,
+          fontWeight: FontWeight.w700,
+          color: AppColorScheme.onSurface,
+        ),
+      ),
+      SizedBox(height: landscape ? 14 : 10),
+      // The real rail runs off the edge of the screen, so let this one do the
+      // same instead of squeezing the posters to fit.
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        child: Row(
+          children: [
+            for (var index = 1; index <= (landscape ? 6 : 4); index++)
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: ClipRRect(
+                  borderRadius: AppRadius.circular(8),
+                  child: SizedBox(
+                    width: railPosterWidth,
+                    height: railPosterWidth * 3 / 2,
+                    child: _artwork(_itemAt(items, index).posterUrl),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ],
+  );
+
+  final hero = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (showGenres) ...[
+        Text(
+          item.genres.take(3).join('   •   ').toUpperCase(),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: landscape ? 13 : 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.7,
+            height: 1,
+            color: AppColorScheme.onSurface.withValues(alpha: 0.64),
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+      _logoOrTitle(
+        item,
+        width: landscape ? 320 : 270,
+        height: landscape ? 82 : 70,
+        fallbackStyle: TextStyle(
+          fontSize: landscape ? 41 : 32,
+          fontWeight: FontWeight.w700,
+          color: AppColorScheme.onSurface,
+        ),
+      ),
+      const SizedBox(height: 14),
+      meta,
+      ..._techChips(context),
+      const SizedBox(height: 6),
+      _sampleRatings(
+        context,
+        item,
+        UserPreferences.detailsRatings,
+        personal: true,
+      ),
+      if (item.overview != null) ...[
+        const SizedBox(height: 10),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Text(
+            item.overview!,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: landscape ? 16 : 14,
+              height: 1.45,
+              color: AppColorScheme.onSurface.withValues(alpha: 0.87),
+            ),
+          ),
+        ),
+      ],
+      SizedBox(height: landscape ? 28 : 22),
+      ..._detailActionRow(
+        context,
+        landscape: landscape,
+        buttons: _detailButtons(context, auto: 2),
+        gap: landscape ? 14 : 12,
+      ),
+      SizedBox(height: landscape ? 34 : 26),
+      rail,
+    ],
+  );
+
+  return _detailPreviewScaffold(
+    context,
+    item: item,
+    landscape: landscape,
+    hero: hero,
+  );
+}
+
+Widget _spotlightDetail(BuildContext context, MediaBarSlideItem item) {
+  final l10n = AppLocalizations.of(context);
+  final landscape = !_phone;
+
+  Widget summaryCard(IconData icon, String label) => Expanded(
+    child: Container(
+      height: landscape ? 92 : 72,
+      decoration: BoxDecoration(
+        borderRadius: AppRadius.circular(12),
+        border: Border.all(
+          color: AppColorScheme.onSurface.withValues(alpha: 0.2),
+        ),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            AppColorScheme.onSurface.withValues(alpha: 0.10),
+            Colors.black.withValues(alpha: 0.55),
+          ],
+        ),
+      ),
+      child: Stack(
+        children: [
+          // The icon badge the real card paints top-left.
+          Positioned(
+            left: 8,
+            top: 8,
+            child: Container(
+              width: landscape ? 22 : 18,
+              height: landscape ? 22 : 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: 0.45),
+              ),
+              child: Icon(
+                icon,
+                size: landscape ? 12 : 10,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          Positioned(
+            left: 10,
+            right: 10,
+            bottom: 10,
+            child: Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColorScheme.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  final hero = Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _logoOrTitle(
+        item,
+        width: landscape ? 300 : 260,
+        height: landscape ? 75 : 64,
+        fallbackStyle: TextStyle(
+          fontSize: landscape ? 34 : 26,
+          fontWeight: FontWeight.w700,
+          color: AppColorScheme.onSurface,
+        ),
+      ),
+      const SizedBox(height: 10),
+      _modernDetailMeta(item),
+      ..._techChips(context, gap: 8),
+      const SizedBox(height: 6),
+      _sampleRatings(
+        context,
+        item,
+        UserPreferences.detailsRatings,
+        personal: true,
+      ),
+      if (item.overview != null) ...[
+        const SizedBox(height: 8),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: Text(
+            item.overview!,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.45,
+              color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 24),
+      ..._detailActionRow(
+        context,
+        landscape: landscape,
+        buttons: _detailButtons(context, auto: landscape ? 4 : 3),
+      ),
+      SizedBox(height: landscape ? 20 : 24),
+      Row(
+        children: [
+          summaryCard(Icons.people_outline, l10n.spotlightCastCrewStudios),
+          const SizedBox(width: 10),
+          summaryCard(
+            Icons.video_library_outlined,
+            l10n.spotlightChaptersExtras,
+          ),
+          const SizedBox(width: 10),
+          summaryCard(
+            Icons.auto_awesome_outlined,
+            l10n.spotlightSimilarRecommendations,
+          ),
+        ],
+      ),
+    ],
+  );
+
+  return _detailPreviewScaffold(
+    context,
+    item: item,
+    landscape: landscape,
+    hero: hero,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Drawn stand-ins, shown until the artwork loads or when a first run lands
+// mid-scan and the library is still empty.
+// ---------------------------------------------------------------------------
+
+Color get _posterFill => AppColorScheme.onSurface.withValues(alpha: 0.16);
+Color get _strong => AppColorScheme.onSurface.withValues(alpha: 0.78);
+Color get _weak => AppColorScheme.onSurface.withValues(alpha: 0.3);
+
+Widget _bar(double width, double height, Color color) => Container(
+  width: width,
+  height: height,
+  decoration: BoxDecoration(
+    color: color,
+    borderRadius: AppRadius.circular(height / 2),
+  ),
+);
+
+Widget _posterCard(double width) => SizedBox(
+  width: width,
+  child: AspectRatio(
+    aspectRatio: 2 / 3,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: _posterFill,
+        borderRadius: AppRadius.circular(3),
+      ),
+    ),
+  ),
+);
+
+Widget _backdrop() => DecoratedBox(
+  decoration: BoxDecoration(
+    gradient: LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [
+        AppColorScheme.accent.withValues(alpha: 0.34),
+        AppColorScheme.surface,
+      ],
+    ),
+  ),
+  child: const SizedBox.expand(),
+);
+
+Widget _fallbackMediaBar(String mode) => switch (mode) {
+  UserPreferences.mediaBarModeMoonfin => Stack(
+    fit: StackFit.expand,
+    children: [
+      _backdrop(),
+      Padding(
+        padding: const EdgeInsets.all(AppSpacing.spaceSm),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 3,
+          children: [_bar(46, 4, _strong), _bar(28, 4, _weak)],
+        ),
+      ),
+    ],
+  ),
+  UserPreferences.mediaBarModeMakd => Stack(
+    fit: StackFit.expand,
+    children: [
+      _backdrop(),
+      Align(
+        alignment: const Alignment(-0.84, 0.2),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 3,
+          children: [
+            _bar(40, 8, _strong),
+            _bar(30, 3, _weak),
+            _bar(24, 3, _weak),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 3,
+              children: [
+                _bar(6, 6, _weak),
+                _bar(14, 6, _strong),
+                _bar(6, 6, _weak),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  ),
+  UserPreferences.mediaBarModeBookshelf => Center(
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      spacing: 6,
+      children: [for (var i = 0; i < 5; i++) _posterCard(18)],
+    ),
+  ),
+  UserPreferences.mediaBarModeGallery => Center(
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      spacing: 6,
+      children: [
+        Opacity(opacity: 0.5, child: _posterCard(14)),
+        Opacity(opacity: 0.5, child: _posterCard(14)),
+        _posterCard(22),
+        Opacity(opacity: 0.5, child: _posterCard(14)),
+        Opacity(opacity: 0.5, child: _posterCard(14)),
+      ],
+    ),
+  ),
+  UserPreferences.mediaBarModeAya => Padding(
+    padding: const EdgeInsets.all(6),
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        ClipRRect(borderRadius: AppRadius.circular(6), child: _backdrop()),
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: _bar(42, 5, _strong),
+          ),
+        ),
+        Positioned(
+          top: 6,
+          right: 6,
+          child: Row(
+            spacing: 2,
+            children: [
+              _bar(8, 2, _strong),
+              _bar(5, 2, _weak),
+              _bar(5, 2, _weak),
+            ],
+          ),
+        ),
+      ],
+    ),
+  ),
+  UserPreferences.mediaBarModeBanner => Stack(
+    fit: StackFit.expand,
+    children: [
+      _backdrop(),
+      Center(
+        child: FractionallySizedBox(
+          widthFactor: 0.88,
+          heightFactor: 0.44,
+          child: Container(
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: AppColorScheme.onSurface.withValues(alpha: 0.12),
+              borderRadius: AppRadius.circular(5),
+            ),
+            child: _bar(38, 4, _strong),
+          ),
+        ),
+      ),
+    ],
+  ),
+  _ => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 6,
+      children: [
+        _bar(30, 3, _weak),
+        Row(
+          spacing: 4,
+          children: [for (var i = 0; i < 4; i++) _posterCard(13)],
+        ),
+        _bar(30, 3, _weak),
+      ],
+    ),
+  ),
+};
+
+Widget _fallbackHomeRows({required bool modern}) => Padding(
+  padding: const EdgeInsets.all(10),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisAlignment: MainAxisAlignment.center,
+    spacing: 9,
+    children: [
+      for (var row = 0; row < 2; row++) ...[
+        _bar(44, 3, _weak),
+        Row(
+          spacing: modern ? 7 : 5,
+          children: [
+            for (var i = 0; i < (modern ? 4 : 6); i++)
+              if (modern)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 3,
+                  children: [_posterCard(26), _bar(18, 3, _weak)],
+                )
+              else
+                _posterCard(18),
+          ],
+        ),
+      ],
+    ],
+  ),
+);
+
+Widget _fallbackDetail(DetailScreenStyle style) {
+  if (style == DetailScreenStyle.frost) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _backdrop(),
+        ColoredBox(color: AppColors.black.withValues(alpha: 0.45)),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 26),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: AppColorScheme.surface.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                spacing: 5,
+                children: [_bar(56, 8, _strong), _bar(40, 5, _weak)],
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 17,
+          child: Center(child: _bar(60, 12, _weak)),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 4,
+          child: Center(child: _bar(80, 8, _weak)),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.quickLook) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _backdrop(),
+        ColoredBox(color: AppColors.black.withValues(alpha: 0.62)),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FractionallySizedBox(
+            widthFactor: 0.5,
+            heightFactor: 1,
+            child: ColoredBox(
+              color: AppColorScheme.surface,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 5,
+                  children: [
+                    const Spacer(),
+                    _bar(48, 8, _strong),
+                    _bar(36, 5, _weak),
+                    Row(
+                      spacing: 4,
+                      children: [
+                        _bar(22, 8, _strong),
+                        _bar(8, 8, _weak),
+                        _bar(8, 8, _weak),
+                      ],
+                    ),
+                    const Spacer(flex: 2),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.premiere) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _backdrop(),
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            spacing: 5,
+            children: [
+              _bar(60, 9, _strong),
+              _bar(44, 5, _weak),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                spacing: 4,
+                children: [
+                  _bar(26, 8, _strong),
+                  _bar(8, 8, _weak),
+                  _bar(8, 8, _weak),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.stage) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _backdrop(),
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 8,
+            children: [
+              Column(
+                spacing: 5,
+                children: [_posterCard(30), _bar(30, 8, _strong)],
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 5,
+                  children: [
+                    _bar(52, 9, _strong),
+                    _bar(40, 5, _weak),
+                    _bar(64, 5, _weak),
+                    _bar(58, 5, _weak),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.minimalist) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _backdrop(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.end,
+            spacing: 6,
+            children: [
+              _bar(58, 9, _strong),
+              Row(
+                spacing: 5,
+                children: [
+                  _bar(40, 11, _strong),
+                  _bar(11, 11, _weak),
+                  _bar(11, 11, _weak),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Row(
+                spacing: 5,
+                children: [
+                  for (var i = 0; i < 3; i++) _bar(34, 20, _weak),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.nouveau) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(flex: 4, child: _backdrop()),
+        Expanded(
+          flex: 6,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Transform.translate(
+                  offset: const Offset(0, -14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    spacing: 4,
+                    children: [
+                      _bar(34, 2, _weak),
+                      _bar(58, 6, _strong),
+                      _bar(30, 3, _weak),
+                    ],
+                  ),
+                ),
+                Row(
+                  spacing: 4,
+                  children: [
+                    Container(
+                      width: 26,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+                        borderRadius: AppRadius.circular(4),
+                      ),
+                    ),
+                    for (var i = 0; i < 2; i++)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: _posterFill,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                  ],
+                ),
+                const Spacer(),
+                _bar(24, 3, _strong),
+                const SizedBox(height: 4),
+                Row(
+                  spacing: 4,
+                  children: [for (var i = 0; i < 5; i++) _posterCard(16)],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  if (style == DetailScreenStyle.spotlight) {
+    Widget summaryCard() => Expanded(
+      child: Container(
+        height: 22,
+        padding: const EdgeInsets.all(4),
+        alignment: Alignment.bottomLeft,
+        decoration: BoxDecoration(
+          color: _posterFill,
+          borderRadius: AppRadius.circular(4),
+        ),
+        child: _bar(18, 3, _strong),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(flex: 4, child: _backdrop()),
+        Expanded(
+          flex: 6,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Transform.translate(
+                  offset: const Offset(0, -12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    spacing: 4,
+                    children: [_bar(46, 4, _strong), _bar(30, 3, _weak)],
+                  ),
+                ),
+                const Spacer(),
+                Row(
+                  spacing: 4,
+                  children: [
+                    Container(
+                      width: 22,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+                        borderRadius: AppRadius.circular(4),
+                      ),
+                    ),
+                    for (var i = 0; i < 3; i++)
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: _weak, width: 1),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  spacing: 5,
+                  children: [summaryCard(), summaryCard(), summaryCard()],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+  if (style == DetailScreenStyle.classic) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        spacing: 5,
+        children: [
+          _posterCard(30),
+          _bar(50, 4, _strong),
+          _bar(32, 3, _weak),
+          Container(
+            width: 34,
+            height: 10,
+            decoration: BoxDecoration(
+              color: AppColorScheme.onSurface.withValues(alpha: 0.85),
+              borderRadius: AppRadius.circular(5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(flex: 4, child: _backdrop()),
+      Expanded(
+        flex: 6,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Transform.translate(
+                offset: const Offset(0, -12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 4,
+                  children: [_bar(46, 4, _strong), _bar(30, 3, _weak)],
+                ),
+              ),
+              const Spacer(),
+              Row(
+                spacing: 8,
+                children: [
+                  _bar(16, 3, _strong),
+                  _bar(16, 3, _weak),
+                  _bar(16, 3, _weak),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}

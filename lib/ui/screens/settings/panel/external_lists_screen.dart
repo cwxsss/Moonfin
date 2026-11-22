@@ -1,0 +1,1904 @@
+part of '../settings_side_panel.dart';
+
+class _SeasonalRowScreen extends StatefulWidget {
+  const _SeasonalRowScreen();
+
+  @override
+  State<_SeasonalRowScreen> createState() => _SeasonalRowScreenState();
+}
+
+class _SeasonalRowScreenState extends State<_SeasonalRowScreen> {
+  final _scope = FocusScopeNode(debugLabel: 'SeasonalRowScope');
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    super.dispose();
+  }
+
+  Set<String> _hiddenHolidays(UserPreferences prefs) =>
+      UserPreferences.parseSeasonalRowHiddenHolidays(
+        prefs.get(UserPreferences.seasonalRowHiddenHolidays),
+      );
+
+  Future<void> _toggleHoliday(UserPreferences prefs, String holiday) async {
+    final hidden = _hiddenHolidays(prefs);
+    if (!hidden.remove(holiday)) hidden.add(holiday);
+    await prefs.set(
+      UserPreferences.seasonalRowHiddenHolidays,
+      UserPreferences.seasonalHolidayIds.where(hidden.contains).join(','),
+    );
+    if (mounted) setState(() {});
+  }
+
+  String _countryLabel(String code, AppLocalizations l10n) => switch (code) {
+        UserPreferences.seasonalRowCountryAuto => l10n.seasonalRowCountryAuto,
+        'US' => l10n.countryUnitedStates,
+        'CA' => l10n.countryCanada,
+        UserPreferences.seasonalRowCountryOther => l10n.seasonalRowCountryOther,
+        _ => code,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final prefs = GetIt.instance<UserPreferences>();
+    final hidden = _hiddenHolidays(prefs);
+
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        child: Scaffold(
+          appBar: buildSettingsAppBar(context, Text(l10n.seasonalRow)),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                adaptiveListSection(
+                  children: [
+                    StringPickerPreferenceTile(
+                      preference: UserPreferences.seasonalRowCountry,
+                      title: l10n.seasonalRowCountry,
+                      icon: Icons.public,
+                      options: {
+                        for (final code in UserPreferences.seasonalRowCountryOptions)
+                          code: _countryLabel(code, l10n),
+                      },
+                    ),
+                    // Silo picks its own seasonal row, so the switch would do nothing there.
+                    if (GetIt.instance<MediaServerClient>().itemsApi is! ServerHomeSectionsApi)
+                      SwitchPreferenceTile(
+                        preference: UserPreferences.seasonalRowAllYear,
+                        title: l10n.seasonalRowAllYear,
+                        subtitle: l10n.seasonalRowAllYearDescription,
+                        icon: Icons.event_repeat,
+                        onChanged: _reloadHomeRows,
+                      ),
+                  ],
+                ),
+                _SectionHeader(l10n.seasonalRowHolidays),
+                adaptiveListSection(
+                  children: [
+                    for (final holiday in UserPreferences.seasonalHolidayIds)
+                      _TvSettingsListTile(
+                        leading: Icon(
+                          hidden.contains(holiday)
+                              ? Icons.check_box_outline_blank
+                              : Icons.check_box,
+                        ),
+                        title: Text(seasonalHolidayTitle(holiday, l10n)),
+                        onTap: () => _toggleHoliday(prefs, holiday),
+                      ),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                  child: Text(
+                    l10n.seasonalRowHolidaysHint,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImdbListsScreen extends StatefulWidget {
+  const _ImdbListsScreen();
+
+  @override
+  State<_ImdbListsScreen> createState() => _ImdbListsScreenState();
+}
+
+class _ImdbListsScreenState extends State<_ImdbListsScreen> {
+  final _scope = FocusScopeNode(debugLabel: 'ImdbListsScope');
+  final _firstFocusNode = FocusNode(debugLabel: 'imdb_top_250_movies');
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    _firstFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _pushPersonalizationSync() {
+    final syncService = GetIt.instance<PluginSyncService>();
+    final client = GetIt.instance.isRegistered<MediaServerClient>()
+        ? GetIt.instance<MediaServerClient>()
+        : null;
+    if (client != null) {
+      syncService.pushSettings(client);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final prefs = GetIt.instance<UserPreferences>();
+
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        targetNode: PlatformDetection.isTV ? _firstFocusNode : null,
+        child: Scaffold(
+          appBar: buildSettingsAppBar(
+            context,
+            const Text('IMDb Lists'),
+          ),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                _SectionHeader(l10n.sorting),
+                adaptiveListSection(
+                  children: [
+                    EnumPreferenceTile<ExternalRowSortBy>(
+                      focusNode: _firstFocusNode,
+                      preference: UserPreferences.imdbRowsSortBy,
+                      title: l10n.imdbRowsSorting,
+                      description: l10n.imdbRowsSortingDescription,
+                      icon: Icons.sort,
+                      labelOf: (v) => externalRowSortLabel(v, l10n),
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                    EnumPreferenceTile<SortDirection>(
+                      preference: UserPreferences.imdbRowsSortOrder,
+                      title: l10n.sortOrder,
+                      description: l10n.imdbRowsSortOrderDescription,
+                      icon: Icons.swap_vert,
+                      enabled: prefs.get(UserPreferences.imdbRowsSortBy) != ExternalRowSortBy.none &&
+                          prefs.get(UserPreferences.imdbRowsSortBy) != ExternalRowSortBy.shuffle,
+                      labelOf: (v) => v == SortDirection.ascending
+                          ? l10n.ascending
+                          : l10n.descending,
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TmdbListsScreen extends StatefulWidget {
+  const _TmdbListsScreen();
+
+  @override
+  State<_TmdbListsScreen> createState() => _TmdbListsScreenState();
+}
+
+class _TmdbListsScreenState extends State<_TmdbListsScreen> {
+  final _scope = FocusScopeNode(debugLabel: 'TmdbListsScope');
+  final _firstFocusNode = FocusNode(debugLabel: 'tmdb_popular_movies');
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    _firstFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final prefs = GetIt.instance<UserPreferences>();
+    final l10n = AppLocalizations.of(context);
+
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        targetNode: PlatformDetection.isTV ? _firstFocusNode : null,
+        child: Scaffold(
+          appBar: buildSettingsAppBar(
+            context,
+            const Text('TMDB Lists'),
+          ),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                _SectionHeader(l10n.sorting),
+                adaptiveListSection(
+                  children: [
+                    EnumPreferenceTile<ExternalRowSortBy>(
+                      focusNode: _firstFocusNode,
+                      preference: UserPreferences.tmdbRowsSortBy,
+                      title: l10n.tmdbRowsSorting,
+                      description: l10n.tmdbRowsSortingDescription,
+                      icon: Icons.sort,
+                      labelOf: (v) => externalRowSortLabel(v, l10n),
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                    EnumPreferenceTile<SortDirection>(
+                      preference: UserPreferences.tmdbRowsSortOrder,
+                      title: l10n.sortOrder,
+                      description: l10n.tmdbRowsSortOrderDescription,
+                      icon: Icons.swap_vert,
+                      enabled: prefs.get(UserPreferences.tmdbRowsSortBy) != ExternalRowSortBy.none &&
+                          prefs.get(UserPreferences.tmdbRowsSortBy) != ExternalRowSortBy.shuffle,
+                      labelOf: (v) => v == SortDirection.ascending
+                          ? l10n.ascending
+                          : l10n.descending,
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UpcomingCalendarsScreen extends StatefulWidget {
+  const _UpcomingCalendarsScreen();
+
+  @override
+  State<_UpcomingCalendarsScreen> createState() => _UpcomingCalendarsScreenState();
+}
+
+class _UpcomingCalendarsScreenState extends State<_UpcomingCalendarsScreen> {
+  final _scope = FocusScopeNode(debugLabel: 'UpcomingCalendarsScope');
+  final _firstNode = FocusNode(debugLabel: 'radarr_calendar_show_cinema');
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    _firstNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final prefs = GetIt.instance<UserPreferences>();
+
+    final l10n = AppLocalizations.of(context);
+    bool rowOn(HomeSectionType type) => prefs.homeSectionsConfig
+        .any((c) => c.isBuiltin && c.type == type && c.enabled);
+    final calendarsCanMerge = rowOn(HomeSectionType.radarrCalendar) &&
+        rowOn(HomeSectionType.sonarrCalendar);
+
+    if (!calendarsCanMerge && prefs.get(UserPreferences.mergeRadarrSonarrCalendars)) {
+      prefs.set(UserPreferences.mergeRadarrSonarrCalendars, false);
+    }
+
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        targetNode: PlatformDetection.isTV ? _firstNode : null,
+        child: Scaffold(
+          appBar: buildSettingsAppBar(
+            context,
+            Text(l10n.upcomingCalendars),
+          ),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                const _SectionHeader('Radarr'),
+                adaptiveListSection(
+                  children: [
+                    SwitchPreferenceTile(
+                      key: const ValueKey('radarrCalendarShowCinema'),
+                      focusNode: _firstNode,
+                      preference: UserPreferences.radarrCalendarShowCinema,
+                      title: l10n.radarrCalendarShowCinema,
+                      icon: Icons.theater_comedy,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('radarrCalendarShowDigital'),
+                      preference: UserPreferences.radarrCalendarShowDigital,
+                      title: l10n.radarrCalendarShowDigital,
+                      icon: Icons.tv,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('radarrCalendarShowPhysical'),
+                      preference: UserPreferences.radarrCalendarShowPhysical,
+                      title: l10n.radarrCalendarShowPhysical,
+                      icon: Icons.album,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('radarrCalendarShowDate'),
+                      preference: UserPreferences.radarrCalendarShowDate,
+                      title: l10n.calendarShowReleaseDate,
+                      icon: Icons.calendar_month,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('radarrCalendarHideDownloaded'),
+                      preference: UserPreferences.radarrCalendarHideDownloaded,
+                      title: l10n.radarrCalendarHideDownloaded,
+                      icon: Icons.download_done,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ],
+                ),
+                const _SectionHeader('Sonarr'),
+                adaptiveListSection(
+                  children: [
+                    SwitchPreferenceTile(
+                      key: const ValueKey('sonarrCalendarShowEpisodeInfo'),
+                      preference: UserPreferences.sonarrCalendarShowEpisodeInfo,
+                      title: l10n.sonarrCalendarShowEpisodeInfo,
+                      icon: Icons.info_outline,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('sonarrCalendarShowDate'),
+                      preference: UserPreferences.sonarrCalendarShowDate,
+                      title: l10n.calendarShowReleaseDate,
+                      icon: Icons.calendar_month,
+                      onChanged: () => setState(() {}),
+                    ),
+                    SwitchPreferenceTile(
+                      key: const ValueKey('sonarrCalendarHideDownloaded'),
+                      preference: UserPreferences.sonarrCalendarHideDownloaded,
+                      title: l10n.sonarrCalendarHideDownloaded,
+                      icon: Icons.download_done,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ],
+                ),
+                adaptiveListSection(
+                  children: [
+                    SwitchPreferenceTile(
+                      key: const ValueKey('mergeRadarrSonarrCalendars'),
+                      preference: UserPreferences.mergeRadarrSonarrCalendars,
+                      title: l10n.mergeRadarrSonarrCalendars,
+                      icon: Icons.merge_type,
+                      enabled: calendarsCanMerge,
+                      onChanged: () => setState(() {}),
+                    ),
+                    if (GetIt.instance<PluginSyncService>().calendarAvailable)
+                      SwitchPreferenceTile(
+                        key: const ValueKey('calendarRowSeeAll'),
+                        preference: UserPreferences.calendarRowSeeAll,
+                        title: l10n.calendarRowSeeAll,
+                        subtitle: l10n.calendarRowSeeAllSubtitle,
+                        icon: Icons.calendar_view_month,
+                        onChanged: () {
+                          _pushPersonalizationSync();
+                          _reloadHomeRows();
+                        },
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeerrListsScreen extends StatefulWidget {
+  const _SeerrListsScreen();
+
+  @override
+  State<_SeerrListsScreen> createState() => _SeerrListsScreenState();
+}
+
+class _SeerrListsScreenState extends State<_SeerrListsScreen> {
+  late List<SeerrRowConfig> _rows;
+  final _syncService = GetIt.instance<PluginSyncService>();
+  final _seerrPrefs = GetIt.instance<SeerrPreferences>();
+  final _scope = FocusScopeNode(debugLabel: 'SeerrListsScope');
+  final _firstFocusNode = FocusNode(debugLabel: 'seerr_display_rows');
+
+  /// The sliders on Seerr's discover page this client can show, or null until
+  /// they are read.
+  List<SeerrDiscoverSlider>? _sliders;
+
+  @override
+  void initState() {
+    super.initState();
+    _rows = List.of(_seerrPrefs.homeRowsConfig);
+    _loadSliders();
+  }
+
+  Future<void> _loadSliders() async {
+    try {
+      final repo = await GetIt.instance.getAsync<SeerrRepository>();
+      await repo.ensureInitialized();
+      if (!repo.isAvailable) return;
+      final sliders = await repo.getDiscoverSliders(force: true);
+      if (!mounted) return;
+      setState(() {
+        _sliders = sliders.where((s) => s.isSupported).toList();
+      });
+    } catch (e) {
+      debugPrint('[SeerrLists] Failed to load discover sliders: $e');
+    }
+  }
+
+  HomeSectionConfig _sliderSection(SeerrDiscoverSlider slider) =>
+      seerrSliderSection(
+        slider,
+        serverId: GetIt.instance<MediaServerClient>().baseUrl,
+      );
+
+  bool _isSliderShown(HomeSectionConfig entry) => GetIt.instance<UserPreferences>()
+      .homeSectionsConfig
+      .any((s) => s.stableId == entry.stableId && s.enabled);
+
+  Future<void> _setSliderShown(HomeSectionConfig entry, bool shown) async {
+    final prefs = GetIt.instance<UserPreferences>();
+    await prefs.setHomeSectionsConfig(
+      setSeerrSliderShown(prefs.homeSectionsConfig, entry, shown: shown),
+    );
+    _pushPersonalizationSync();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    _firstFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _pushPersonalizationSync() {
+    final client = GetIt.instance.isRegistered<MediaServerClient>()
+        ? GetIt.instance<MediaServerClient>()
+        : null;
+    if (client != null) {
+      _syncService.pushSettings(client);
+    }
+  }
+
+  void _saveRows() {
+    _seerrPrefs.setHomeRowsConfig(_rows);
+
+    final prefs = GetIt.instance<UserPreferences>();
+    final configs = List<HomeSectionConfig>.from(prefs.homeSectionsConfig);
+    var changed = false;
+    for (final row in _rows) {
+      final type = row.type.homeSectionType;
+      final idx = configs.indexWhere((c) => c.type == type);
+      if (idx >= 0) {
+        if (configs[idx].enabled != row.enabled) {
+          configs[idx] = configs[idx].copyWith(enabled: row.enabled);
+          changed = true;
+        }
+      } else {
+        configs.add(HomeSectionConfig(
+          type: type,
+          enabled: row.enabled,
+          order: configs.length,
+        ));
+        changed = true;
+      }
+    }
+    if (changed) {
+      prefs.setHomeSectionsConfig(configs);
+    }
+
+    _pushPersonalizationSync();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final prefs = GetIt.instance<UserPreferences>();
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        targetNode: PlatformDetection.isTV ? _firstFocusNode : null,
+        child: Scaffold(
+          appBar: buildSettingsAppBar(
+            context,
+            const Text('Seerr Rows'),
+          ),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                _SectionHeader(l10n.sorting),
+                adaptiveListSection(
+                  children: [
+                    EnumPreferenceTile<ExternalRowSortBy>(
+                      focusNode: _firstFocusNode,
+                      preference: UserPreferences.seerrRowsSortBy,
+                      title: seerrBrand(l10n.seerrRowsSorting),
+                      description: seerrBrand(l10n.seerrRowsSortingDescription),
+                      icon: Icons.sort,
+                      labelOf: (v) => externalRowSortLabel(v, l10n),
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                    EnumPreferenceTile<SortDirection>(
+                      preference: UserPreferences.seerrRowsSortOrder,
+                      title: l10n.sortOrder,
+                      description: seerrBrand(l10n.seerrRowsSortOrderDescription),
+                      icon: Icons.swap_vert,
+                      enabled: prefs.get(UserPreferences.seerrRowsSortBy) != ExternalRowSortBy.none &&
+                          prefs.get(UserPreferences.seerrRowsSortBy) != ExternalRowSortBy.shuffle,
+                      labelOf: (v) => v == SortDirection.ascending
+                          ? l10n.ascending
+                          : l10n.descending,
+                      onChanged: () {
+                        _pushPersonalizationSync();
+                        _reloadHomeRows();
+                      },
+                    ),
+                  ],
+                ),
+                _SectionHeader(l10n.settingsSeerrHomePageRowsSection),
+                adaptiveListSection(
+                  children: _rows.asMap().entries.map((entry) {
+                    final rowIndex = entry.key;
+                    final row = entry.value;
+                    return _SeerrRowSwitchTile(
+                      title: localizeSeerrRowTitle(row.type, l10n),
+                      value: row.enabled,
+                      onChanged: (enabled) {
+                        setState(() {
+                          _rows[rowIndex] = row.copyWith(enabled: enabled);
+                        });
+                        _saveRows();
+                      },
+                    );
+                  }).toList(),
+                ),
+                if (_sliders case final sliders? when sliders.isNotEmpty) ...[
+                  _SectionHeader(seerrBrand(l10n.seerrDiscoverSliders)),
+                  adaptiveListSection(
+                    children: [
+                      for (final entry in sliders.map(_sliderSection))
+                        _SeerrRowSwitchTile(
+                          title: entry.pluginDisplayText ?? '',
+                          value: _isSliderShown(entry),
+                          onChanged: (shown) => _setSliderShown(entry, shown),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeerrRowSwitchTile extends StatelessWidget {
+  final String title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _SeerrRowSwitchTile({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TvFocusHighlight(
+      enabled: true,
+      builder: (context, focused) {
+        final iconColor = focused && settingsTileInvertsOnFocus
+            ? AppColors.black.withValues(alpha: 0.54)
+            : (Theme.of(context).iconTheme.color ?? AppColorScheme.onSurface);
+        final secondary = buildSettingsLeadingIconShell(
+          context,
+          icon: const Icon(Icons.list_alt),
+          focused: focused,
+          iconColor: iconColor,
+        );
+
+        return SwitchListTile.adaptive(
+          secondary: secondary,
+          title: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          value: value,
+          onChanged: onChanged,
+        );
+      },
+    );
+  }
+}
+
+class _CustomListsScreen extends StatefulWidget {
+  const _CustomListsScreen();
+
+  @override
+  State<_CustomListsScreen> createState() => _CustomListsScreenState();
+}
+
+class _CustomListsScreenState extends State<_CustomListsScreen> {
+  final _scope = FocusScopeNode(debugLabel: 'CustomListsScope');
+  final _addFocusNode = FocusNode(debugLabel: 'custom_add_button');
+  final _syncService = GetIt.instance<PluginSyncService>();
+
+  void _pushPersonalizationSync() {
+    final client = GetIt.instance.isRegistered<MediaServerClient>()
+        ? GetIt.instance<MediaServerClient>()
+        : null;
+    if (client != null) {
+      _syncService.pushSettings(client);
+    }
+  }
+
+  List<HomeSectionConfig> _getCustomConfigs() {
+    final prefs = GetIt.instance<UserPreferences>();
+    return prefs.homeSectionsConfig
+        .where((c) => c.isPluginDynamic && c.pluginSource == HomeSectionPluginSource.custom)
+        .toList();
+  }
+
+  void _toggleConfig(HomeSectionConfig config, bool enabled) async {
+    final prefs = GetIt.instance<UserPreferences>();
+    final configs = List<HomeSectionConfig>.from(prefs.homeSectionsConfig);
+    final idx = configs.indexWhere((c) => c.stableId == config.stableId);
+    if (idx >= 0) {
+      configs[idx] = configs[idx].copyWith(enabled: enabled);
+      await prefs.setHomeSectionsConfig(configs);
+      _pushPersonalizationSync();
+      setState(() {});
+    }
+  }
+
+  void _deleteConfig(HomeSectionConfig config) async {
+    final confirmed = await showFocusRestoringDialog<bool>(
+      context: context,
+      builder: (ctx) => withCleanSettingsTypography(
+        ctx,
+        AlertDialog(
+          title: const Text('Delete Custom Row'),
+          content: Text('Are you sure you want to delete "${config.pluginDisplayText}"?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed == true) {
+      final prefs = GetIt.instance<UserPreferences>();
+      final configs = List<HomeSectionConfig>.from(prefs.homeSectionsConfig);
+      configs.removeWhere((c) => c.stableId == config.stableId);
+      await prefs.setHomeSectionsConfig(configs);
+      _pushPersonalizationSync();
+      setState(() {});
+    }
+  }
+
+  void _showAddEditDialog(HomeSectionConfig? existing) async {
+    final saved = await showFocusRestoringDialog<bool>(
+      context: context,
+      builder: (ctx) => _AddEditCustomRowDialog(existing: existing),
+    );
+    if (saved == true) {
+      setState(() {});
+    }
+  }
+
+  String _getSourceLabel(String source) {
+    switch (source) {
+      case 'imdb':
+        return 'IMDb';
+      case 'tmdb':
+        return 'TMDB';
+      case 'letterboxd':
+        return 'Letterboxd';
+      case 'mdblist':
+        return 'MDBList';
+      default:
+        return source.toUpperCase();
+    }
+  }
+
+  String _getTypeLabel(String type, String source) {
+    switch (type) {
+      case 'user_list':
+        if (source == 'tmdb') {
+          return 'List';
+        }
+        if (source == 'mdblist') {
+          return 'List from User ID';
+        }
+        return 'List from URL';
+      case 'list_url':
+        if (source == 'mdblist') {
+          return 'List from URL';
+        }
+        return 'List from URL';
+      case 'user_diary':
+        return 'Diary';
+      case 'watchlist':
+        return 'Watchlist';
+      case 'films':
+        return 'Complete Films';
+      case 'awards_events':
+        return 'Awards/Events';
+      case 'movie_collection':
+        if (source == 'tmdb') {
+          return 'Collection';
+        }
+        return 'Movie Collection';
+      default:
+        return type;
+    }
+  }
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    _addFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final customConfigs = _getCustomConfigs();
+
+    return withCleanSettingsTypography(
+      context,
+      RequestInitialFocus(
+        targetNode: PlatformDetection.isTV ? _addFocusNode : null,
+        child: Scaffold(
+          appBar: buildSettingsAppBar(
+            context,
+            const Text('Custom Rows'),
+          ),
+          body: FocusScope(
+            node: _scope,
+            autofocus: true,
+            child: ListView(
+              children: [
+                adaptiveListSection(
+                  children: [
+                    _TvSettingsListTile(
+                      focusNode: _addFocusNode,
+                      leading: const Icon(Icons.add),
+                      title: const Text('Add a New Custom Home Row'),
+                      subtitle: const Text('Create a custom row from TMDB, Letterboxd, or MDBList.'),
+                      onTap: () => _showAddEditDialog(null),
+                    ),
+                  ],
+                ),
+                if (customConfigs.isNotEmpty) ...[
+                  _SectionHeader(
+                    AppLocalizations.of(context)
+                        .settingsSavedCustomHomeRowsSection,
+                  ),
+                  adaptiveListSection(
+                    children: customConfigs.map((config) {
+                      Map<String, dynamic> rowConfig = {};
+                      try {
+                        rowConfig = jsonDecode(config.pluginAdditionalData ?? '{}') as Map<String, dynamic>;
+                      } catch (_) {}
+                      final source = rowConfig['source'] as String? ?? 'imdb';
+                      final type = rowConfig['type'] as String? ?? 'user_list';
+
+                      return TvFocusHighlight(
+                        enabled: true,
+                        builder: (ctx, focused) {
+                          final iconColor = focused && settingsTileInvertsOnFocus
+                              ? AppColors.black.withValues(alpha: 0.54)
+                              : (Theme.of(ctx).iconTheme.color ??
+                                  AppColorScheme.onSurface);
+                          final leadingIcon = buildSettingsLeadingIconShell(
+                            ctx,
+                            icon: const Icon(Icons.tune_outlined),
+                            focused: focused,
+                            iconColor: iconColor,
+                          );
+
+                          return SwitchListTile.adaptive(
+                            secondary: leadingIcon,
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    config.pluginDisplayText ?? 'Custom Row',
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.edit_outlined, size: 20),
+                                      onPressed: () => _showAddEditDialog(config),
+                                      color: focused ? Colors.black87 : AppColorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent),
+                                      onPressed: () => _deleteConfig(config),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            subtitle: Text(
+                              'Source: ${_getSourceLabel(source)} | Type: ${_getTypeLabel(type, source)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: focused ? Colors.black54 : AppColorScheme.onSurface.withValues(alpha: 0.5),
+                              ),
+                            ),
+                            value: config.enabled,
+                            onChanged: (enabled) => _toggleConfig(config, enabled),
+                          );
+                        },
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddEditCustomRowDialog extends StatefulWidget {
+  final HomeSectionConfig? existing;
+
+  const _AddEditCustomRowDialog({this.existing});
+
+  @override
+  State<_AddEditCustomRowDialog> createState() => _AddEditCustomRowDialogState();
+}
+
+class _AddEditCustomRowDialogState extends State<_AddEditCustomRowDialog> {
+  final _formKey = GlobalKey<FormState>();
+
+  late String _source;
+  late String _type;
+  String _sortBy = 'none';
+  String _sortOrder = 'desc';
+  bool _showUserRatings = false;
+  bool _isValidating = false;
+  bool _allowPop = false;
+
+  final _nameController = TextEditingController();
+  final _letterboxdUsernameController = TextEditingController();
+  final _tmdbIdController = TextEditingController();
+  final _mdblistUsernameController = TextEditingController();
+  final _mdblistListNameController = TextEditingController();
+
+  final _nameFocusNode = FocusNode(debugLabel: 'custom_row_name_field');
+  final _letterboxdUsernameFocusNode = FocusNode(debugLabel: 'letterboxd_user_field');
+  final _tmdbIdFocusNode = FocusNode(debugLabel: 'tmdb_id_field');
+  final _mdblistUsernameFocusNode = FocusNode(debugLabel: 'mdblist_user_field');
+  final _mdblistListNameFocusNode = FocusNode(debugLabel: 'mdblist_list_field');
+  final _sortByFocusNode = FocusNode(debugLabel: 'custom_row_sort_by_field');
+  final _sortOrderFocusNode = FocusNode(debugLabel: 'custom_row_sort_order_field');
+  final _sourceFocusNode = FocusNode(debugLabel: 'custom_row_source_field');
+  final _typeFocusNode = FocusNode(debugLabel: 'custom_row_type_field');
+  final _showUserRatingsFocusNode = FocusNode(debugLabel: 'custom_row_show_user_ratings');
+
+  final _syncService = GetIt.instance<PluginSyncService>();
+
+  @override
+  void initState() {
+    super.initState();
+    CustomTVTextField.isKeyboardVisibleNotifier.value = false;
+    if (widget.existing != null) {
+      _nameController.text = widget.existing!.pluginDisplayText ?? '';
+      Map<String, dynamic> rowConfig = {};
+      try {
+        rowConfig = jsonDecode(widget.existing!.pluginAdditionalData ?? '{}') as Map<String, dynamic>;
+      } catch (_) {}
+      _source = rowConfig['source'] as String? ?? 'tmdb';
+      _type = rowConfig['type'] as String? ?? 'user_list';
+      _sortBy = rowConfig['sort_by'] as String? ?? 'none';
+      _sortOrder = rowConfig['sort_order'] as String? ?? 'desc';
+      _showUserRatings = rowConfig['show_user_ratings'] as bool? ?? false;
+      final params = rowConfig['params'] as Map<String, dynamic>? ?? {};
+
+      if (_source == 'imdb') {
+        _source = 'tmdb';
+        _type = 'user_list';
+      }
+
+      if (_source == 'letterboxd') {
+        _letterboxdUsernameController.text = params['user'] as String? ?? '';
+      } else if (_source == 'tmdb') {
+        _tmdbIdController.text = params['id'] as String? ?? '';
+      } else if (_source == 'mdblist') {
+        _mdblistUsernameController.text = params['username'] as String? ?? '';
+        if (_type == 'list_url') {
+          final user = params['username'] as String? ?? '';
+          final list = params['listname'] as String? ?? '';
+          if (user.isNotEmpty && list.isNotEmpty) {
+            _mdblistListNameController.text = mdblistListUrl(params);
+          } else {
+            _mdblistListNameController.text = '';
+          }
+        } else {
+          _mdblistListNameController.text = params['listname'] as String? ?? '';
+        }
+      }
+    } else {
+      _source = 'tmdb';
+      _type = 'user_list';
+      _sortBy = 'none';
+      _sortOrder = 'desc';
+    }
+  }
+
+  @override
+  void dispose() {
+    CustomTVTextField.isKeyboardVisibleNotifier.value = false;
+    _nameController.dispose();
+    _letterboxdUsernameController.dispose();
+    _tmdbIdController.dispose();
+    _mdblistUsernameController.dispose();
+    _mdblistListNameController.dispose();
+
+    _nameFocusNode.dispose();
+    _letterboxdUsernameFocusNode.dispose();
+    _tmdbIdFocusNode.dispose();
+    _mdblistUsernameFocusNode.dispose();
+    _mdblistListNameFocusNode.dispose();
+    _sortByFocusNode.dispose();
+    _sortOrderFocusNode.dispose();
+    _sourceFocusNode.dispose();
+    _typeFocusNode.dispose();
+    _showUserRatingsFocusNode.dispose();
+
+    super.dispose();
+  }
+
+  List<String> _getTypesForSource(String source) {
+    switch (source) {
+      case 'tmdb':
+        return ['user_list', 'movie_collection'];
+      case 'letterboxd':
+        return ['user_diary'];
+      case 'mdblist':
+        return ['list_url', 'user_list'];
+      default:
+        return ['user_list'];
+    }
+  }
+
+  String _getTypeLabel(String type) {
+    switch (type) {
+      case 'user_list':
+        if (_source == 'tmdb') {
+          return 'List from TMDB List ID or URL';
+        }
+        if (_source == 'mdblist') {
+          return 'List from User ID';
+        }
+        return 'List from URL';
+      case 'list_url':
+        if (_source == 'mdblist') {
+          return 'List from URL';
+        }
+        return 'List from URL';
+      case 'user_diary':
+        return 'Diary';
+      case 'watchlist':
+        return 'Watchlist';
+      case 'films':
+        return 'Complete Films';
+      case 'awards_events':
+        return 'Awards/Events';
+      case 'movie_collection':
+        if (_source == 'tmdb') {
+          return 'Collection from TMDB Collection ID or URL';
+        }
+        return 'Movie Collection';
+      default:
+        return type;
+    }
+  }
+
+  void _dismiss(bool result) {
+    setState(() => _allowPop = true);
+    Navigator.pop(context, result);
+  }
+
+  void _maybeExit() async {
+    final bool exit = await showFocusRestoringDialog<bool>(
+      context: context,
+      builder: (ctx) => withCleanSettingsTypography(
+        ctx,
+        AlertDialog(
+          backgroundColor: Colors.grey[900],
+          title: const Text(
+            'Discard Changes?',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Unsaved changes, do you want to exit the wizard?',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Yes'),
+            ),
+          ],
+        ),
+      ),
+    ) ?? false;
+
+    if (exit && mounted) {
+      _dismiss(false);
+    }
+  }
+
+  void _pushPersonalizationSync() {
+    final client = GetIt.instance.isRegistered<MediaServerClient>()
+        ? GetIt.instance<MediaServerClient>()
+        : null;
+    if (client != null) {
+      _syncService.pushSettings(client);
+    }
+  }
+
+  void _save() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return;
+
+    final params = <String, dynamic>{};
+    if (_source == 'letterboxd') {
+      params['user'] = _letterboxdUsernameController.text.trim().toLowerCase();
+    } else if (_source == 'tmdb') {
+      var rawId = _tmdbIdController.text.trim();
+      if (rawId.contains('/') || rawId.startsWith('http')) {
+        if (rawId.endsWith('/')) {
+          rawId = rawId.substring(0, rawId.length - 1);
+        }
+        final parts = rawId.split('/');
+        if (parts.isNotEmpty) {
+          rawId = parts.last;
+        }
+      }
+      params['id'] = rawId;
+    } else if (_source == 'mdblist') {
+      if (_type == 'list_url') {
+        params.addAll(parseMdblistListUrl(_mdblistListNameController.text));
+      } else {
+        params['username'] = _mdblistUsernameController.text.trim();
+        params['listname'] = _mdblistListNameController.text.trim();
+      }
+    }
+
+    final additionalData = jsonEncode({
+      'source': _source,
+      'type': _type,
+      'params': params,
+      'sort_by': _sortBy,
+      'sort_order': _sortOrder,
+      'show_user_ratings': _showUserRatings,
+    });
+
+    final prefs = GetIt.instance<UserPreferences>();
+    final configs = List<HomeSectionConfig>.from(prefs.homeSectionsConfig);
+
+    setState(() => _isValidating = true);
+
+    final isEditing = widget.existing != null;
+    final newConfig = HomeSectionConfig.pluginDynamic(
+      serverId: 'custom',
+      pluginSection: isEditing ? widget.existing!.pluginSection! : 'custom_row_${DateTime.now().millisecondsSinceEpoch}',
+      pluginDisplayText: name,
+      pluginAdditionalData: additionalData,
+      pluginSource: HomeSectionPluginSource.custom,
+      enabled: isEditing ? widget.existing!.enabled : true,
+      order: isEditing ? widget.existing!.order : configs.length,
+    );
+
+    try {
+      final customService = GetIt.instance<CustomExternalListsService>();
+      final items = await customService.fetchCustomRow(newConfig, throwOnError: true);
+      if (items.isEmpty) {
+        throw Exception('No results returned.');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final customService = GetIt.instance<CustomExternalListsService>();
+      final url = customService.constructSourceUrl(_source, _type, params);
+      setState(() => _isValidating = false);
+
+      final errorString = describeError(e, AppLocalizations.of(context))
+          .replaceAll('Constructed URL: $url. ', '')
+          .replaceAll('Constructed URL: $url', '');
+
+      showFocusRestoringDialog(
+        context: context,
+        builder: (ctx) => withCleanSettingsTypography(
+          ctx,
+          AlertDialog(
+            backgroundColor: Colors.grey[900],
+            title: const Text(
+              'Warning: Custom Row Validation Failed',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Failed to fetch items from the custom row.',
+                  style: TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: Text(
+                    url,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColorScheme.accent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Error details: $errorString',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _isValidating = false);
+
+    if (isEditing) {
+      final idx = configs.indexWhere((c) => c.stableId == widget.existing!.stableId);
+      if (idx >= 0) {
+        configs[idx] = newConfig;
+      }
+    } else {
+      configs.add(newConfig);
+    }
+
+    // Proactively clear row data source cache so it forces a reload of the new config
+    try {
+      final customService = GetIt.instance<CustomExternalListsService>();
+      final file = await customService.cacheFile(newConfig);
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    } catch (_) {}
+
+    await prefs.setHomeSectionsConfig(configs);
+    _pushPersonalizationSync();
+
+    if (mounted) {
+      _dismiss(true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final typeOptions = _getTypesForSource(_source);
+    if (!typeOptions.contains(_type)) {
+      _type = typeOptions.first;
+    }
+
+    final prefs = GetIt.instance<UserPreferences>();
+    final tmdbApiKey = prefs.get(UserPreferences.tmdbApiKey);
+    // A server-wide admin key also works and never syncs to this device, so only
+    // warn when the plugin reports MDBList as unavailable too.
+    final mdblistConfigured =
+        prefs.get(UserPreferences.mdblistApiKey).isNotEmpty ||
+        GetIt.instance<PluginSyncService>().mdblistAvailable;
+
+    return withCleanSettingsTypography(
+      context,
+      PopScope(
+        canPop: _allowPop,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _maybeExit();
+        },
+        child: Align(
+          alignment: PlatformDetection.isTV ? const Alignment(0, -0.8) : Alignment.center,
+          child: ValueListenableBuilder<bool>(
+            valueListenable: CustomTVTextField.isKeyboardVisibleNotifier,
+            builder: (context, isKeyboardVisible, child) {
+              return AlertDialog(
+                backgroundColor: Colors.grey[900],
+                insetPadding: PlatformDetection.isTV
+                    ? EdgeInsets.fromLTRB(40, 24, 40, isKeyboardVisible ? 280 : 24)
+                    : const EdgeInsets.symmetric(horizontal: 40.0, vertical: 24.0),
+                title: Text(
+                  widget.existing != null ? 'Edit Custom Home Row' : 'Add Custom Home Row',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                content: child!,
+                actions: _isValidating
+                    ? [
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      ]
+                    : [
+                        TextButton(
+                          onPressed: () => _dismiss(false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: _save,
+                          child: const Text('Save'),
+                        ),
+                      ],
+              );
+            },
+            child: Form(
+              key: _formKey,
+              child: AbsorbPointer(
+                absorbing: _isValidating,
+            child: SizedBox(
+              width: 500,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                   const Text('Source', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                   const SizedBox(height: 4),
+                   ListenableBuilder(
+                     listenable: _sourceFocusNode,
+                     builder: (context, child) {
+                       final hasFocus = _sourceFocusNode.hasFocus;
+                       return Theme(
+                         data: Theme.of(context).copyWith(
+                           canvasColor: Colors.grey[900],
+                           focusColor: AppColorScheme.accent.withValues(alpha: 0.25),
+                         ),
+                         child: DropdownButtonFormField<String>(
+                           value: _source,
+                           focusNode: _sourceFocusNode,
+                           dropdownColor: Colors.grey[900],
+                           style: const TextStyle(color: Colors.white, fontSize: 14),
+                           decoration: InputDecoration(
+                             filled: true,
+                             fillColor: hasFocus
+                                 ? AppColorScheme.buttonFocused.withValues(alpha: 0.22)
+                                 : Colors.black26,
+                             border: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: hasFocus
+                                     ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                     : Colors.transparent,
+                                 width: 1.0,
+                               ),
+                             ),
+                             enabledBorder: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: hasFocus
+                                     ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                     : Colors.transparent,
+                                 width: 1.0,
+                               ),
+                             ),
+                             focusedBorder: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: AppColorScheme.accent.withValues(alpha: 0.72),
+                                 width: 1.5,
+                               ),
+                             ),
+                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                           ),
+                           items: const [
+                             DropdownMenuItem(value: 'tmdb', child: Text('TMDB')),
+                             DropdownMenuItem(value: 'letterboxd', child: Text('Letterboxd')),
+                             DropdownMenuItem(value: 'mdblist', child: Text('MDBList')),
+                           ],
+                           onChanged: (val) {
+                             if (val != null) {
+                               setState(() {
+                                 _source = val;
+                                 _type = _getTypesForSource(val).first;
+                               });
+                             }
+                           },
+                         ),
+                       );
+                     },
+                   ),
+                     if (typeOptions.length > 1) ...[
+                       const SizedBox(height: 16),
+                       const Text('Type', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                       const SizedBox(height: 4),
+                       ListenableBuilder(
+                         listenable: _typeFocusNode,
+                         builder: (context, child) {
+                           final hasFocus = _typeFocusNode.hasFocus;
+                           return Theme(
+                             data: Theme.of(context).copyWith(
+                               canvasColor: Colors.grey[900],
+                               focusColor: AppColorScheme.accent.withValues(alpha: 0.25),
+                             ),
+                             child: DropdownButtonFormField<String>(
+                               value: _type,
+                               focusNode: _typeFocusNode,
+                               dropdownColor: Colors.grey[900],
+                               style: const TextStyle(color: Colors.white, fontSize: 14),
+                               decoration: InputDecoration(
+                                 filled: true,
+                                 fillColor: hasFocus
+                                     ? AppColorScheme.buttonFocused.withValues(alpha: 0.22)
+                                     : Colors.black26,
+                                 border: OutlineInputBorder(
+                                   borderRadius: AppRadius.circular(8),
+                                   borderSide: BorderSide(
+                                     color: hasFocus
+                                         ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                         : Colors.transparent,
+                                     width: 1.0,
+                                   ),
+                                 ),
+                                 enabledBorder: OutlineInputBorder(
+                                   borderRadius: AppRadius.circular(8),
+                                   borderSide: BorderSide(
+                                     color: hasFocus
+                                         ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                         : Colors.transparent,
+                                     width: 1.0,
+                                   ),
+                                 ),
+                                 focusedBorder: OutlineInputBorder(
+                                   borderRadius: AppRadius.circular(8),
+                                   borderSide: BorderSide(
+                                     color: AppColorScheme.accent.withValues(alpha: 0.72),
+                                     width: 1.5,
+                                   ),
+                                 ),
+                                 contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                               ),
+                               items: typeOptions.map((t) {
+                                 return DropdownMenuItem(value: t, child: Text(_getTypeLabel(t)));
+                               }).toList(),
+                               onChanged: (val) {
+                                 if (val != null) {
+                                   setState(() {
+                                     _type = val;
+                                   });
+                                 }
+                               },
+                             ),
+                           );
+                         },
+                       ),
+                     ],
+                   const SizedBox(height: 16),
+ 
+                   // Source + Type specific parameters
+ 
+                   if (_source == 'letterboxd') ...[
+                     const Text('Letterboxd Username', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                     const SizedBox(height: 4),
+                     _SettingsTextField(
+                       controller: _letterboxdUsernameController,
+                       hint: 'Username',
+                       focusNode: _letterboxdUsernameFocusNode,
+                     ),
+                     if (tmdbApiKey.isEmpty) ...[
+                       const SizedBox(height: 12),
+                       const Text(
+                         'WARNING: TMDB API Key must be configured in settings to resolve Letterboxd list items.',
+                         style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                       ),
+                     ],
+                   ],
+ 
+                   if (_source == 'tmdb') ...[
+                     Text(_type == 'movie_collection' ? 'TMDB Collection ID or URL' : 'TMDB List ID or URL', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                     const SizedBox(height: 4),
+                     _SettingsTextField(
+                       controller: _tmdbIdController,
+                       hint: _type == 'movie_collection'
+                           ? '12345 OR https://www.themoviedb.org/collection/12345'
+                           : '12345 OR https://www.themoviedb.org/list/12345',
+                       focusNode: _tmdbIdFocusNode,
+                     ),
+                     if (tmdbApiKey.isEmpty) ...[
+                       const SizedBox(height: 12),
+                       const Text(
+                         'WARNING: TMDB API Key must be configured in settings to fetch TMDB lists.',
+                         style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                       ),
+                     ],
+                   ],
+ 
+                   if (_source == 'mdblist') ...[
+                     if (_type == 'list_url') ...[
+                       const Text('MDBList URL', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                       const SizedBox(height: 4),
+                       _SettingsTextField(
+                         controller: _mdblistListNameController,
+                         hint: 'e.g. https://mdblist.com/lists/username/list-slug',
+                         focusNode: _mdblistListNameFocusNode,
+                       ),
+                     ] else ...[
+                       const Text('MDBList Username', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                       const SizedBox(height: 4),
+                       _SettingsTextField(
+                         controller: _mdblistUsernameController,
+                         hint: 'Username',
+                         focusNode: _mdblistUsernameFocusNode,
+                       ),
+                       const SizedBox(height: 16),
+                       const Text('List Name (slug)', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                       const SizedBox(height: 4),
+                       _SettingsTextField(
+                         controller: _mdblistListNameController,
+                         hint: 'list-name-slug',
+                         focusNode: _mdblistListNameFocusNode,
+                       ),
+                     ],
+                     if (!mdblistConfigured) ...[
+                       const SizedBox(height: 12),
+                       const Text(
+                         'WARNING: MDBList API Key must be configured in settings (or server-wide by your admin) to fetch MDBList lists.',
+                         style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                       ),
+                     ],
+                   ],
+ 
+                   const SizedBox(height: 16),
+                   const Text('Sort By', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                   const SizedBox(height: 4),
+                   ListenableBuilder(
+                     listenable: _sortByFocusNode,
+                     builder: (context, child) {
+                       final hasFocus = _sortByFocusNode.hasFocus;
+                       return Theme(
+                         data: Theme.of(context).copyWith(
+                           canvasColor: Colors.grey[900],
+                           focusColor: AppColorScheme.accent.withValues(alpha: 0.25),
+                         ),
+                         child: DropdownButtonFormField<String>(
+                           value: _sortBy,
+                           focusNode: _sortByFocusNode,
+                           dropdownColor: Colors.grey[900],
+                           style: const TextStyle(color: Colors.white, fontSize: 14),
+                           decoration: InputDecoration(
+                             filled: true,
+                             fillColor: hasFocus
+                                 ? AppColorScheme.buttonFocused.withValues(alpha: 0.22)
+                                 : Colors.black26,
+                             border: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: hasFocus
+                                     ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                     : Colors.transparent,
+                                 width: 1.0,
+                               ),
+                             ),
+                             enabledBorder: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: hasFocus
+                                     ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                     : Colors.transparent,
+                                 width: 1.0,
+                               ),
+                             ),
+                             focusedBorder: OutlineInputBorder(
+                               borderRadius: AppRadius.circular(8),
+                               borderSide: BorderSide(
+                                 color: AppColorScheme.accent.withValues(alpha: 0.72),
+                                 width: 1.5,
+                               ),
+                             ),
+                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                           ),
+                           items: const [
+                             DropdownMenuItem(value: 'none', child: Text('Default (When Added)')),
+                             DropdownMenuItem(value: 'title', child: Text('Film Name')),
+                             DropdownMenuItem(value: 'popularity', child: Text('Film Popularity')),
+                             DropdownMenuItem(value: 'year', child: Text('Release Date')),
+                             DropdownMenuItem(value: 'rating', child: Text('Average Rating')),
+                             DropdownMenuItem(value: 'shuffle', child: Text('Shuffle')),
+                           ],
+                           onChanged: (val) {
+                             if (val != null) {
+                               setState(() {
+                                 _sortBy = val;
+                                 if (val == 'title') {
+                                   _sortOrder = 'asc';
+                                 } else {
+                                   _sortOrder = 'desc';
+                                 }
+                               });
+                             }
+                           },
+                         ),
+                       );
+                     },
+                   ),
+                   if (_sortBy != 'none' && _sortBy != 'shuffle') ...[
+                     const SizedBox(height: 16),
+                     const Text('Sort Order', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                     const SizedBox(height: 4),
+                     ListenableBuilder(
+                       listenable: _sortOrderFocusNode,
+                       builder: (context, child) {
+                         final hasFocus = _sortOrderFocusNode.hasFocus;
+                         return Theme(
+                           data: Theme.of(context).copyWith(
+                             canvasColor: Colors.grey[900],
+                             focusColor: AppColorScheme.accent.withValues(alpha: 0.25),
+                           ),
+                           child: DropdownButtonFormField<String>(
+                             value: _sortOrder,
+                             focusNode: _sortOrderFocusNode,
+                             dropdownColor: Colors.grey[900],
+                             style: const TextStyle(color: Colors.white, fontSize: 14),
+                             decoration: InputDecoration(
+                               filled: true,
+                               fillColor: hasFocus
+                                 ? AppColorScheme.buttonFocused.withValues(alpha: 0.22)
+                                 : Colors.black26,
+                               border: OutlineInputBorder(
+                                 borderRadius: AppRadius.circular(8),
+                                 borderSide: BorderSide(
+                                   color: hasFocus
+                                       ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                       : Colors.transparent,
+                                   width: 1.0,
+                                 ),
+                               ),
+                               enabledBorder: OutlineInputBorder(
+                                 borderRadius: AppRadius.circular(8),
+                                 borderSide: BorderSide(
+                                   color: hasFocus
+                                       ? AppColorScheme.accent.withValues(alpha: 0.72)
+                                       : Colors.transparent,
+                                   width: 1.0,
+                                 ),
+                               ),
+                               focusedBorder: OutlineInputBorder(
+                                 borderRadius: AppRadius.circular(8),
+                                 borderSide: BorderSide(
+                                   color: AppColorScheme.accent.withValues(alpha: 0.72),
+                                   width: 1.5,
+                                 ),
+                               ),
+                               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                             ),
+                             items: _sortBy == 'title'
+                                 ? const [
+                                     DropdownMenuItem(value: 'asc', child: Text('A to Z')),
+                                     DropdownMenuItem(value: 'desc', child: Text('Z to A')),
+                                   ]
+                                 : (_sortBy == 'year'
+                                     ? const [
+                                         DropdownMenuItem(value: 'desc', child: Text('Newest First')),
+                                         DropdownMenuItem(value: 'asc', child: Text('Earliest First')),
+                                       ]
+                                     : (_sortBy == 'popularity'
+                                         ? const [
+                                             DropdownMenuItem(value: 'desc', child: Text('Most Popular First')),
+                                             DropdownMenuItem(value: 'asc', child: Text('Least Popular First')),
+                                           ]
+                                         : const [
+                                             DropdownMenuItem(value: 'desc', child: Text('Highest First')),
+                                             DropdownMenuItem(value: 'asc', child: Text('Lowest First')),
+                                           ])),
+                             onChanged: (val) {
+                               if (val != null) {
+                                 setState(() {
+                                   _sortOrder = val;
+                                 });
+                               }
+                             },
+                           ),
+                         );
+                       },
+                     ),
+                   ],
+
+                  (() {
+                    final isUserRatingRelevant = _source == 'letterboxd';
+                    if (isUserRatingRelevant) {
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 16),
+                          TvFocusHighlight(
+                            enabled: true,
+                            builder: (context, focused) {
+                              return SwitchListTile.adaptive(
+                                focusNode: _showUserRatingsFocusNode,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                                title: Text(
+                                  'Show User Ratings?',
+                                  style: TextStyle(
+                                    color: focused && settingsTileInvertsOnFocus
+                                        ? AppColors.black.withValues(alpha: 0.87)
+                                        : Colors.white,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                value: _showUserRatings,
+                                onChanged: (val) {
+                                  setState(() {
+                                    _showUserRatings = val;
+                                  });
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  })(),
+
+                  const SizedBox(height: 16),
+                  const Text('Home Row Custom Name', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  _SettingsTextField(
+                    controller: _nameController,
+                    hint: 'Enter row name...',
+                    focusNode: _nameFocusNode,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  ),
+),
+);
+  }
+}
+
+class _SettingsTextField extends StatefulWidget {
+  final TextEditingController controller;
+  final String hint;
+  final FocusNode focusNode;
+
+  const _SettingsTextField({
+    required this.controller,
+    required this.hint,
+    required this.focusNode,
+  });
+
+  @override
+  State<_SettingsTextField> createState() => _SettingsTextFieldState();
+}
+
+class _SettingsTextFieldState extends State<_SettingsTextField> {
+  final _tvFieldKey = GlobalKey<CustomTVTextFieldState>();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.focusNode.addListener(_onFocusChange);
+    CustomTVTextField.isKeyboardVisibleNotifier.addListener(_onKeyboardVisibilityChange);
+  }
+
+  @override
+  void dispose() {
+    widget.focusNode.removeListener(_onFocusChange);
+    CustomTVTextField.isKeyboardVisibleNotifier.removeListener(_onKeyboardVisibilityChange);
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (widget.focusNode.hasFocus) {
+      _ensureVisible();
+    }
+  }
+
+  void _onKeyboardVisibilityChange() {
+    if (widget.focusNode.hasFocus && CustomTVTextField.isKeyboardVisibleNotifier.value) {
+      _ensureVisible();
+    }
+  }
+
+  void _ensureVisible() {
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (!mounted) return;
+      try {
+        Scrollable.ensureVisible(
+          context,
+          duration: const Duration(milliseconds: 300),
+          alignment: 0.5,
+          curve: Curves.easeInOut,
+        );
+      } catch (_) {}
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isTV = PlatformDetection.isTV;
+    if (isTV) {
+      return Focus(
+        focusNode: widget.focusNode,
+        onKeyEvent: (node, event) {
+          if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+            return KeyEventResult.ignored;
+          }
+          final isKeyboardVisible = _tvFieldKey.currentState?.isKeyboardVisible ?? false;
+          if (event.logicalKey.isBackKey) {
+            if (isKeyboardVisible) {
+              _tvFieldKey.currentState?.closeKeyboard();
+              widget.focusNode.requestFocus();
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.enter ||
+              event.logicalKey == LogicalKeyboardKey.select) {
+            if (!isKeyboardVisible) {
+              _tvFieldKey.currentState?.openKeyboard();
+              return KeyEventResult.handled;
+            }
+          }
+          if (!isKeyboardVisible) {
+            if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+              FocusScope.of(context).nextFocus();
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+              FocusScope.of(context).previousFocus();
+              return KeyEventResult.handled;
+            }
+          }
+          return KeyEventResult.ignored;
+        },
+        child: ListenableBuilder(
+          listenable: widget.focusNode,
+          builder: (_, _) {
+            final focused = widget.focusNode.hasFocus;
+            return CustomTVTextField(
+              key: _tvFieldKey,
+              controller: widget.controller,
+              isFocused: focused,
+              popParentOnKeyboardClose: false,
+              hint: widget.hint,
+              keyboardStyle: GetIt.instance<UserPreferences>().get(
+                UserPreferences.keyboardStyle,
+              ),
+              filled: true,
+              fillColor: focused
+                  ? AppColorScheme.buttonFocused.withValues(alpha: 0.22)
+                  : Colors.black26,
+              borderRadius: 8,
+              borderColor: focused
+                  ? AppColorScheme.accent.withValues(alpha: 0.72)
+                  : Colors.transparent,
+              focusedBorderColor: AppColorScheme.accent,
+              hintStyle: TextStyle(
+                color: AppColorScheme.onSurface.withValues(alpha: 0.4),
+              ),
+              onFieldSubmitted: (_) {
+                widget.focusNode.requestFocus();
+              },
+            );
+          },
+        ),
+      );
+    } else {
+      return TextField(
+        controller: widget.controller,
+        focusNode: widget.focusNode,
+        style: TextStyle(color: AppColorScheme.onSurface),
+        decoration: InputDecoration(
+          hintText: widget.hint,
+          hintStyle: TextStyle(
+            color: AppColorScheme.onSurface.withValues(alpha: 0.4),
+          ),
+          filled: true,
+          fillColor: AppColorScheme.onSurface.withValues(alpha: 0.08),
+          border: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(8)),
+            borderSide: BorderSide.none,
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        ),
+      );
+    }
+  }
+}
+

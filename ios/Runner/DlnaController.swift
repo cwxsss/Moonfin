@@ -1,0 +1,1197 @@
+import Foundation
+
+final class DlnaController: NSObject {
+
+    private let avTransportURN = "urn:schemas-upnp-org:service:AVTransport:1"
+    private let renderingControlURN = "urn:schemas-upnp-org:service:RenderingControl:1"
+    private let ssdpAddress = "239.255.255.250"
+    private let ssdpPort: UInt16 = 1900
+    private let discoveryTimeoutSeconds: TimeInterval = 3.0
+
+    private var eventSink: (([String: Any]) -> Void)?
+    private var activeDeviceControlUrl: String?
+    private var activeDeviceRenderingControlUrl: String?
+    private var pollTimer: DispatchSourceTimer?
+
+    private var activeDeviceEventSubUrl: String?
+    private var genaSubscriptionId: String?
+    private var genaServerFd: Int32 = -1
+    private var genaServerPort: UInt16 = 0
+    private var genaRenewalTimer: DispatchSourceTimer?
+    private var consecutivePollFailures: Int = 0
+    // The one-shot and continuous scans run on separate threads and both write these.
+    private let discoveredUrlsLock = NSLock()
+    private var discoveredEventSubUrls: [String: String] = [:]
+    private var discoveredRenderingControlUrls: [String: String] = [:]
+    // Bumped by every new cast and by the user's own pause, seek and stop, so
+    // a resume seek still waiting for the renderer gives up.
+    private let resumeLock = NSLock()
+    private var resumeGeneration = 0
+    // Bumped by every new cast and by Stop: a cast still starting (waiting out
+    // a stuck renderer) gives up rather than replace a newer one.
+    private var castGeneration = 0
+    private var castControlUrl: String?
+    // Bumped by every transport command except a seek, so a paused seek pauses
+    // again when it's done unless a Play came in, even after another seek.
+    private var transportGeneration = 0
+    private var isDiscovering = false
+
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 10
+        return URLSession(configuration: config)
+    }()
+
+    func setEventSink(_ sink: (([String: Any]) -> Void)?) {
+        eventSink = sink
+        if sink != nil && activeDeviceControlUrl != nil {
+            emitEvent(state: "connected")
+        } else if sink != nil {
+            emitEvent(state: "disconnected")
+        }
+    }
+
+    // MARK: - Discovery
+
+    func discoverTargets(completion: @escaping ([[String: String]]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion([]) }
+                return
+            }
+
+            var targets: [[String: String]] = []
+            var seenLocations = Set<String>()
+            self.runSsdpScan(seenLocations: &seenLocations) { device in
+                targets.append(device)
+            }
+
+            DispatchQueue.main.async { completion(targets) }
+        }
+    }
+
+    /// Starts a continuous SSDP scan, emitting each newly found renderer as a
+    /// `deviceFound` event on the event sink. Keeps scanning until
+    /// [stopContinuousDiscovery] is called. mDNS/SSDP renderers can take several
+    /// seconds to answer, so re-scanning in a loop catches late responders.
+    func startContinuousDiscovery() {
+        if isDiscovering { return }
+        isDiscovering = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var seenLocations = Set<String>()
+            while self.isDiscovering {
+                self.runSsdpScan(seenLocations: &seenLocations) { [weak self] device in
+                    guard let self, self.isDiscovering else { return }
+                    let id = device["id"] ?? ""
+                    if id.isEmpty { return }
+                    DispatchQueue.main.async {
+                        self.eventSink?(
+                            [
+                                "kind": "dlna",
+                                "state": "deviceFound",
+                                "id": id,
+                                "title": device["title"] ?? "DLNA Device",
+                                "subtitle": device["subtitle"] ?? "",
+                            ]
+                        )
+                    }
+                }
+                if self.isDiscovering { Thread.sleep(forTimeInterval: 1.5) }
+            }
+        }
+    }
+
+    func stopContinuousDiscovery() {
+        isDiscovering = false
+    }
+
+    /// Runs a single SSDP M-SEARCH round, invoking [onDevice] for each renderer
+    /// whose LOCATION has not been seen yet (tracked across rounds via
+    /// [seenLocations]).
+    private func runSsdpScan(
+        seenLocations: inout Set<String>,
+        onDevice: ([String: String]) -> Void
+    ) {
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        var timeout = timeval(tv_sec: Int(self.discoveryTimeoutSeconds), tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        let searchMessage = [
+            "M-SEARCH * HTTP/1.1",
+            "HOST: \(self.ssdpAddress):\(self.ssdpPort)",
+            "MAN: \"ssdp:discover\"",
+            "MX: 2",
+            "ST: \(self.avTransportURN)",
+            "", "",
+        ].joined(separator: "\r\n")
+
+        guard let data = searchMessage.data(using: .utf8) else { return }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = self.ssdpPort.bigEndian
+        inet_pton(AF_INET, self.ssdpAddress, &addr.sin_addr)
+
+        let sent = data.withUnsafeBytes { ptr in
+            withUnsafePointer(to: &addr) { addrPtr in
+                addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(fd, ptr.baseAddress, data.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        guard sent > 0 else { return }
+
+        let deadline = Date().addingTimeInterval(self.discoveryTimeoutSeconds)
+        var buf = [UInt8](repeating: 0, count: 4096)
+
+        while Date() < deadline {
+            let n = recv(fd, &buf, buf.count, 0)
+            if n <= 0 { break }
+            let response = String(bytes: buf[..<n], encoding: .utf8) ?? ""
+            guard let location = self.parseHeader(response, name: "LOCATION"),
+                  !seenLocations.contains(location) else { continue }
+            seenLocations.insert(location)
+
+            if let deviceInfo = self.fetchDeviceDescription(locationUrl: location) {
+                onDevice(deviceInfo)
+            }
+        }
+    }
+
+    // MARK: - Transport
+
+    func playToDevice(
+        targetId: String,
+        streamUrl: String,
+        title: String,
+        mimeType: String,
+        dlnaFeatures: String,
+        startPositionTicks: Int64?,
+        durationTicks: Int64?,
+        completion: @escaping (Error?) -> Void
+    ) {
+        emitEvent(state: "connecting")
+        let resumeToken = cancelPendingResume()
+        let castToken = bumpCastGeneration()
+        resumeLock.withLock { castControlUrl = targetId }
+        bumpTransportGeneration()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async {
+                    completion(DlnaError.controllerDeallocated)
+                }
+                return
+            }
+
+            do {
+                let controlUrl = targetId
+                let startTime = self.formatDlnaTime(ticks: startPositionTicks)
+
+                // Some renderers (LG) refuse a URI with Invalid Args unless the
+                // metadata gives the item a class and a res with its MIME type.
+                let upnpClass = mimeType.hasPrefix("audio/")
+                    ? "object.item.audioItem.musicTrack"
+                    : "object.item.videoItem"
+                // The runtime the stream covers. A stream produced as it plays
+                // has no length for the renderer to read one from.
+                let resDuration = durationTicks.map {
+                    " duration=\"\(self.formatDlnaTime(ticks: $0)).000\""
+                } ?? ""
+                let didl = "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\"><item id=\"0\" parentID=\"-1\" restricted=\"1\"><dc:title>\(self.escapeXml(title))</dc:title><upnp:class>\(upnpClass)</upnp:class><res protocolInfo=\"http-get:*:\(self.escapeXml(mimeType)):\(self.escapeXml(dlnaFeatures))\"\(resDuration)>\(self.escapeXml(streamUrl))</res></item></DIDL-Lite>"
+                let metadataXml = self.escapeXml(didl)
+
+                try self.sendSoap(
+                    controlUrl: controlUrl,
+                    action: "SetAVTransportURI",
+                    innerBody: """
+                    <InstanceID>0</InstanceID>
+                    <CurrentURI>\(self.escapeXml(streamUrl))</CurrentURI>
+                    <CurrentURIMetaData>\(metadataXml)</CurrentURIMetaData>
+                    """,
+                    current: { [weak self] in self?.isCurrentCast(castToken) ?? false }
+                )
+
+                guard self.isCurrentCast(castToken) else { throw DlnaError.castSuperseded }
+                try self.sendSoap(
+                    controlUrl: controlUrl,
+                    action: "Play",
+                    innerBody: """
+                    <InstanceID>0</InstanceID>
+                    <Speed>1</Speed>
+                    """
+                )
+                guard self.isCurrentCast(castToken) else {
+                    // A newer cast or a Stop took over, so this one leaves the
+                    // controls alone. Its renderer may be playing with nothing
+                    // to control it, so it's stopped unless the newer cast went
+                    // to it too.
+                    if self.resumeLock.withLock({ self.castControlUrl }) != controlUrl {
+                        _ = try? self.sendSoap(
+                            controlUrl: controlUrl,
+                            action: "Stop",
+                            innerBody: "<InstanceID>0</InstanceID>"
+                        )
+                    }
+                    throw DlnaError.castSuperseded
+                }
+
+                self.activeDeviceControlUrl = controlUrl
+                let (renderingControlUrl, eventSubUrl) = self.discoveredUrlsLock.withLock {
+                    (self.discoveredRenderingControlUrls[controlUrl], self.discoveredEventSubUrls[controlUrl])
+                }
+                self.activeDeviceRenderingControlUrl = renderingControlUrl
+                self.consecutivePollFailures = 0
+                self.activeDeviceEventSubUrl = eventSubUrl
+                self.startGenaServer()
+                if let url = eventSubUrl { self.subscribeGena(eventSubUrl: url) }
+                self.startPlaybackPolling()
+
+                DispatchQueue.main.async { [weak self] in
+                    self?.emitEvent(state: "connected")
+                    completion(nil)
+                }
+
+                if let ticks = startPositionTicks, ticks > 0 {
+                    self.seekOnceStarted(
+                        controlUrl: controlUrl, target: startTime, generation: resumeToken)
+                }
+            } catch DlnaError.castSuperseded {
+                // A newer cast or a Stop took over; that one reports itself.
+                DispatchQueue.main.async { completion(DlnaError.castSuperseded) }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.emitEvent(state: "error", message: error.localizedDescription)
+                    completion(error)
+                }
+            }
+        }
+    }
+
+    func pause(completion: @escaping (Error?) -> Void) {
+        cancelPendingResume()
+        bumpTransportGeneration()
+        withActiveDevice(completion: completion) { controlUrl in
+            try self.sendSoap(
+                controlUrl: controlUrl,
+                action: "Pause",
+                innerBody: "<InstanceID>0</InstanceID>"
+            )
+        }
+    }
+
+    func play(completion: @escaping (Error?) -> Void) {
+        bumpTransportGeneration()
+        withActiveDevice(completion: completion) { controlUrl in
+            try self.sendSoap(
+                controlUrl: controlUrl,
+                action: "Play",
+                innerBody: """
+                <InstanceID>0</InstanceID>
+                <Speed>1</Speed>
+                """
+            )
+        }
+    }
+
+    func seek(positionTicks: Int64, completion: @escaping (Error?) -> Void) {
+        cancelPendingResume()
+        let transportToken = resumeLock.withLock { transportGeneration }
+        withActiveDevice(completion: completion) { controlUrl in
+            let target = self.formatDlnaTime(ticks: positionTicks)
+            do {
+                try self.sendSeek(controlUrl: controlUrl, target: target)
+            } catch {
+                // Some renderers (LG) refuse a Seek while paused with 501, so
+                // play, seek once playing, and pause again.
+                guard (try? self.queryTransportState(controlUrl: controlUrl)) == "PAUSED_PLAYBACK" else { throw error }
+                var seekError: Error?
+                do {
+                    try self.sendSoap(
+                        controlUrl: controlUrl,
+                        action: "Play",
+                        innerBody: """
+                        <InstanceID>0</InstanceID>
+                        <Speed>1</Speed>
+                        """
+                    )
+                    self.awaitTransportState(controlUrl: controlUrl, state: "PLAYING")
+                    try self.sendSeek(controlUrl: controlUrl, target: target)
+                } catch {
+                    seekError = error
+                }
+                // Paused it stays, even when Play or the seek fails, unless a
+                // newer command (a Play) came in meanwhile. A seek that left
+                // the renderer playing isn't reported as done.
+                var pauseError: Error?
+                if self.resumeLock.withLock({ self.transportGeneration == transportToken }) {
+                    do {
+                        try self.sendSoap(controlUrl: controlUrl, action: "Pause", innerBody: "<InstanceID>0</InstanceID>")
+                    } catch {
+                        pauseError = error
+                    }
+                }
+                if let error = seekError ?? pauseError { throw error }
+            }
+        }
+    }
+
+    private func sendSeek(controlUrl: String, target: String) throws {
+        try sendSoap(
+            controlUrl: controlUrl,
+            action: "Seek",
+            innerBody: """
+            <InstanceID>0</InstanceID>
+            <Unit>REL_TIME</Unit>
+            <Target>\(target)</Target>
+            """
+        )
+    }
+
+    private func awaitTransportState(controlUrl: String, state: String) {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if (try? queryTransportState(controlUrl: controlUrl)) == state { return }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+    }
+
+    func stop(completion: @escaping (Error?) -> Void) {
+        cancelPendingResume()
+        bumpCastGeneration()
+        resumeLock.withLock { castControlUrl = nil }
+        bumpTransportGeneration()
+        withActiveDevice(completion: completion) { [weak self] controlUrl in
+            try self?.sendSoap(
+                controlUrl: controlUrl,
+                action: "Stop",
+                innerBody: "<InstanceID>0</InstanceID>"
+            )
+            self?.stopGena()
+            self?.consecutivePollFailures = 0
+            self?.stopPlaybackPolling()
+            self?.activeDeviceControlUrl = nil
+            self?.activeDeviceRenderingControlUrl = nil
+            DispatchQueue.main.async {
+                self?.emitEvent(state: "disconnected")
+            }
+        }
+    }
+
+    func cleanup() {
+        cancelPendingResume()
+        bumpCastGeneration()
+        stopPlaybackPolling()
+        stopGena()
+        consecutivePollFailures = 0
+        activeDeviceControlUrl = nil
+        activeDeviceRenderingControlUrl = nil
+        eventSink = nil
+    }
+
+    func getVolume(completion: @escaping (Double?, Error?) -> Void) {
+        guard let renderingUrl = activeDeviceRenderingControlUrl else {
+            completion(nil, DlnaError.noActiveSession)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async {
+                    completion(nil, DlnaError.controllerDeallocated)
+                }
+                return
+            }
+
+            do {
+                let response = try self.sendSoap(
+                    controlUrl: renderingUrl,
+                    action: "GetVolume",
+                    innerBody: "<InstanceID>0</InstanceID><Channel>Master</Channel>",
+                    serviceURN: self.renderingControlURN
+                )
+                let currentVolume = Double(self.parseXmlElement(xml: response, elementName: "CurrentVolume") ?? "0") ?? 0
+                let normalized = max(0, min(1, currentVolume / 100.0))
+                DispatchQueue.main.async {
+                    completion(normalized, nil)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.emitEvent(state: "error", message: error.localizedDescription)
+                    completion(nil, error)
+                }
+            }
+        }
+    }
+
+    func setVolume(_ volume: Double, completion: @escaping (Error?) -> Void) {
+        guard let renderingUrl = activeDeviceRenderingControlUrl else {
+            completion(DlnaError.noActiveSession)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async {
+                    completion(DlnaError.controllerDeallocated)
+                }
+                return
+            }
+
+            do {
+                let clamped = max(0, min(1, volume))
+                let targetVolume = Int(clamped * 100)
+                _ = try self.sendSoap(
+                    controlUrl: renderingUrl,
+                    action: "SetVolume",
+                    innerBody: "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>\(targetVolume)</DesiredVolume>",
+                    serviceURN: self.renderingControlURN
+                )
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.emitEvent(state: "error", message: error.localizedDescription)
+                    completion(error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func withActiveDevice(
+        completion: @escaping (Error?) -> Void,
+        action: @escaping (String) throws -> Void
+    ) {
+        guard let controlUrl = activeDeviceControlUrl else {
+            completion(DlnaError.noActiveSession)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try action(controlUrl)
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.emitEvent(state: "error", message: error.localizedDescription)
+                    completion(error)
+                }
+            }
+        }
+    }
+
+    private func parseHeader(_ response: String, name: String) -> String? {
+        for line in response.components(separatedBy: "\r\n") {
+            if line.lowercased().hasPrefix(name.lowercased() + ":") {
+                return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    private func fetchDeviceDescription(locationUrl: String) -> [String: String]? {
+        guard let url = URL(string: locationUrl),
+              let data = try? Data(contentsOf: url) else { return nil }
+
+        let parser = DlnaDeviceXMLParser(data: data, avTransportURN: avTransportURN)
+        guard parser.parse(),
+              let controlPath = parser.avTransportControlURL else { return nil }
+
+        let controlUrl = resolveUrl(base: locationUrl, relative: controlPath)
+        let renderingControlUrl = parser.renderingControlURL.map { resolveUrl(base: locationUrl, relative: $0) }
+        let eventSubUrl = parser.avTransportEventSubURL.map { resolveUrl(base: locationUrl, relative: $0) }
+        discoveredUrlsLock.withLock {
+            if let renderingControlUrl { discoveredRenderingControlUrls[controlUrl] = renderingControlUrl }
+            if let eventSubUrl { discoveredEventSubUrls[controlUrl] = eventSubUrl }
+        }
+        let friendlyName = parser.friendlyName ?? "DLNA Device"
+        let modelName = parser.modelName ?? ""
+
+        return [
+            "id": controlUrl,
+            "title": friendlyName,
+            "subtitle": modelName,
+        ]
+    }
+
+    private func resolveUrl(base: String, relative: String) -> String {
+        guard let baseURL = URL(string: base),
+              let resolved = URL(string: relative, relativeTo: baseURL) else {
+            return relative
+        }
+        return resolved.absoluteString
+    }
+
+        @discardableResult
+        private func sendSoap(
+            controlUrl: String,
+            action: String,
+            innerBody: String,
+            serviceURN: String? = nil,
+            current: () -> Bool = { true }
+        ) throws -> String {
+            do {
+                return try sendSoapOnce(
+                    controlUrl: controlUrl,
+                    action: action,
+                    innerBody: innerBody,
+                    serviceURN: serviceURN
+                )
+            } catch DlnaError.httpError(let failed, _, let upnpCode)
+                where failed == "SetAVTransportURI" && upnpCode == 701 {
+                // A renderer still holding an earlier URI (an LG left in
+                // LG_TRANSITIONING by a cast that never started) refuses a
+                // new one with 701 until it is stopped. While it is still
+                // opening that URI (TRANSITIONING, about 20 s for HLS) it
+                // doesn't answer Stop, so stopping is retried until it gives
+                // up and takes it.
+                let deadline = Date().addingTimeInterval(25)
+                while true {
+                    guard current() else { throw DlnaError.castSuperseded }
+                    _ = try? sendSoapOnce(
+                        controlUrl: controlUrl,
+                        action: "Stop",
+                        innerBody: "<InstanceID>0</InstanceID>"
+                    )
+                    // An unanswered query isn't a renderer that has moved on.
+                    let state = try? queryTransportState(controlUrl: controlUrl)
+                    let settled = state.map { !$0.contains("TRANSITIONING") } ?? false
+                    if settled || Date() >= deadline { break }
+                    Thread.sleep(forTimeInterval: 1)
+                }
+                guard current() else { throw DlnaError.castSuperseded }
+                return try sendSoapOnce(
+                    controlUrl: controlUrl,
+                    action: action,
+                    innerBody: innerBody,
+                    serviceURN: serviceURN
+                )
+            } catch let error as URLError where error.code == .timedOut && action == "Play" {
+                // An LG playing HLS stays TRANSITIONING and never answers
+                // Play, though it plays. Its LG_TRANSITIONING is a stream it
+                // couldn't open, which stays a failure.
+                let state = (try? queryTransportState(controlUrl: controlUrl)) ?? ""
+                if state == "PLAYING" || state == "TRANSITIONING" { return "" }
+                throw error
+            }
+        }
+
+        private func sendSoapOnce(
+            controlUrl: String,
+            action: String,
+            innerBody: String,
+            serviceURN: String? = nil
+        ) throws -> String {
+                guard let url = URL(string: controlUrl) else {
+                        throw DlnaError.invalidUrl
+                }
+
+            let effectiveServiceURN = serviceURN ?? avTransportURN
+
+                let envelope = """
+                <?xml version="1.0" encoding="utf-8"?>
+                <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                    <s:Body>
+                        <u:\(action) xmlns:u="\(effectiveServiceURN)">
+                            \(innerBody)
+                        </u:\(action)>
+                    </s:Body>
+                </s:Envelope>
+                """
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
+                request.setValue("\"\(effectiveServiceURN)#\(action)\"", forHTTPHeaderField: "SOAPAction")
+                request.httpBody = envelope.data(using: .utf8)
+
+                let semaphore = DispatchSemaphore(value: 0)
+                var responseData: Data?
+                var responseError: Error?
+                var statusCode = 0
+
+                let task = session.dataTask(with: request) { data, response, error in
+                        responseData = data
+                        responseError = error
+                        statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        semaphore.signal()
+                }
+                task.resume()
+                semaphore.wait()
+
+                if let error = responseError { throw error }
+                if statusCode < 200 || statusCode >= 300 {
+                        throw DlnaError.httpError(
+                            action: action,
+                            statusCode: statusCode,
+                            upnpCode: upnpErrorCode(responseData)
+                        )
+                }
+                return String(data: responseData ?? Data(), encoding: .utf8) ?? ""
+        }
+
+    /// The `errorCode` of a SOAP fault's UPnPError, if the body has one.
+    private func upnpErrorCode(_ data: Data?) -> Int? {
+        guard let body = data.flatMap({ String(data: $0, encoding: .utf8) }),
+              let range = body.range(
+                of: "<errorCode>\\s*(\\d+)\\s*</errorCode>",
+                options: .regularExpression
+              )
+        else { return nil }
+        return Int(body[range].filter(\.isNumber))
+    }
+
+    private func formatDlnaTime(ticks: Int64?) -> String {
+        guard let ticks, ticks > 0 else { return "00:00:00" }
+        let totalSeconds = ticks / 10_000_000
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+
+    private func escapeXml(_ text: String) -> String {
+        return text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    private func emitEvent(state: String, message: String? = nil, positionTicks: Int64? = nil) {
+        var event: [String: Any] = [
+            "kind": "dlna",
+            "state": state,
+        ]
+        if let message, !message.isEmpty { event["message"] = message }
+        if let positionTicks, positionTicks >= 0 { event["positionTicks"] = positionTicks }
+        eventSink?(event)
+    }
+
+    private func startPlaybackPolling() {
+        stopPlaybackPolling()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+        timer.setEventHandler { [weak self] in
+            self?.pollPlaybackState()
+        }
+        pollTimer = timer
+        timer.resume()
+    }
+
+    private func stopPlaybackPolling() {
+        pollTimer?.cancel()
+        pollTimer = nil
+    }
+
+    private func pollPlaybackState() {
+        guard let controlUrl = activeDeviceControlUrl else { return }
+        do {
+            let state = try queryTransportState(controlUrl: controlUrl)
+            // An unknown position is left out, not sent as 0.
+            let positionTicks = try queryPositionTicks(controlUrl: controlUrl)
+            let mappedState: String
+            switch state {
+            case "PLAYING": mappedState = "playing"
+            case "PAUSED_PLAYBACK": mappedState = "paused"
+            case "TRANSITIONING": mappedState = "buffering"
+            default: mappedState = "idle"
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.consecutivePollFailures = 0
+                self?.emitEvent(state: mappedState, positionTicks: positionTicks)
+            }
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.consecutivePollFailures += 1
+                if self.consecutivePollFailures >= 3 {
+                    self.handleDeviceOffline()
+                }
+            }
+        }
+    }
+
+    /// Resumes at [target] once the renderer has started, after the cast is
+    /// already connected. Some renderers (LG) refuse a Seek before Play with
+    /// 711 and ignore one sent before the position moves, so the cast plays
+    /// from the start rather than failing when the renderer never takes it,
+    /// or never reports its position moving within the wait.
+    private func seekOnceStarted(controlUrl: String, target: String, generation: Int) {
+        func current() -> Bool { resumeLock.withLock { resumeGeneration == generation } }
+        // A slow renderer takes a while to answer each query, so the wait is
+        // timed rather than counted.
+        let deadline = Date().addingTimeInterval(15)
+        var started = false
+        while Date() < deadline {
+            guard current() else { return }
+            if let ticks = try? queryPositionTicks(controlUrl: controlUrl), ticks > 0 {
+                started = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        guard started, current() else { return }
+        try? sendSeek(controlUrl: controlUrl, target: target)
+    }
+
+    @discardableResult
+    private func bumpCastGeneration() -> Int {
+        resumeLock.withLock {
+            castGeneration += 1
+            return castGeneration
+        }
+    }
+
+    private func isCurrentCast(_ token: Int) -> Bool {
+        resumeLock.withLock { castGeneration == token }
+    }
+
+    private func bumpTransportGeneration() {
+        resumeLock.withLock { transportGeneration += 1 }
+    }
+
+    @discardableResult
+    private func cancelPendingResume() -> Int {
+        resumeLock.withLock {
+            resumeGeneration += 1
+            return resumeGeneration
+        }
+    }
+
+    private func queryTransportState(controlUrl: String) throws -> String {
+        let response = try sendSoap(controlUrl: controlUrl, action: "GetTransportInfo", innerBody: "<InstanceID>0</InstanceID>")
+        return parseXmlElement(xml: response, elementName: "CurrentTransportState") ?? "STOPPED"
+    }
+
+    /// The renderer's position, or nil when it gives none it knows.
+    private func queryPositionTicks(controlUrl: String) throws -> Int64? {
+        let response = try sendSoap(controlUrl: controlUrl, action: "GetPositionInfo", innerBody: "<InstanceID>0</InstanceID>")
+        guard let relTime = parseXmlElement(xml: response, elementName: "RelTime") else { return nil }
+        return parseDlnaTime(relTime)
+    }
+
+    private func parseXmlElement(xml: String, elementName: String) -> String? {
+        guard let data = xml.data(using: .utf8) else { return nil }
+        let parser = SimpleXMLElementParser(data: data, targetElement: elementName)
+        return parser.parse()
+    }
+
+    // Nil for a time the renderer doesn't know (UPnP's NOT_IMPLEMENTED).
+    private func parseDlnaTime(_ time: String) -> Int64? {
+        let parts = time.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
+        guard parts.count == 3,
+              let hours = Int64(parts[0]),
+              let minutes = Int64(parts[1]),
+              let secondsPart = parts[2].split(separator: ".").first,
+              let seconds = Int64(secondsPart)
+        else { return nil }
+        return (hours * 3600 + minutes * 60 + seconds) * 10_000_000
+    }
+
+    // MARK: - GENA Event Subscription
+
+    private func handleDeviceOffline() {
+        guard activeDeviceControlUrl != nil else { return }
+        cancelPendingResume()
+        stopPlaybackPolling()
+        stopGena()
+        activeDeviceControlUrl = nil
+        activeDeviceRenderingControlUrl = nil
+        consecutivePollFailures = 0
+        emitEvent(state: "disconnected", message: "Device unreachable")
+    }
+
+    private func startGenaServer() {
+        stopGenaServer()
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else { return }
+
+        var reuseAddr: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = INADDR_ANY
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else { Darwin.close(fd); return }
+
+        var assignedAddr = sockaddr_in()
+        var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        withUnsafeMutablePointer(to: &assignedAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                getsockname(fd, sa, &addrLen)
+            }
+        }
+        let port = UInt16(bigEndian: assignedAddr.sin_port)
+
+        Darwin.listen(fd, 5)
+        genaServerFd = fd
+        genaServerPort = port
+
+        let serverFd = fd
+        Thread.detachNewThread { [weak self] in
+            guard let self else { Darwin.close(serverFd); return }
+            self.genaServerLoop(fd: serverFd)
+        }
+    }
+
+    private func stopGenaServer() {
+        if genaServerFd >= 0 {
+            Darwin.close(genaServerFd)
+            genaServerFd = -1
+        }
+        genaServerPort = 0
+    }
+
+    private func genaServerLoop(fd: Int32) {
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let clientFd = Darwin.accept(fd, nil, nil)
+            if clientFd < 0 { break }
+
+            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+            var rawData = Data()
+            var headerEnd: Data.Index? = nil
+            let separator = Data([13, 10, 13, 10])
+
+            readLoop: while rawData.count < 65536 {
+                let n = Darwin.recv(clientFd, &buf, buf.count, 0)
+                if n <= 0 { break }
+                rawData.append(contentsOf: buf[..<n])
+                if let range = rawData.range(of: separator) {
+                    headerEnd = range.upperBound
+                    break readLoop
+                }
+            }
+
+            var body = ""
+            if let headerEnd,
+               let headerStr = String(data: rawData[rawData.startIndex..<headerEnd], encoding: .utf8) {
+                let contentLength = headerStr.components(separatedBy: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) }
+                    ?? 0
+
+                var bodyData = Data(rawData[headerEnd...])
+                var remaining = contentLength - bodyData.count
+                while remaining > 0 {
+                    let n = Darwin.recv(clientFd, &buf, min(remaining, buf.count), 0)
+                    if n <= 0 { break }
+                    bodyData.append(contentsOf: buf[..<n])
+                    remaining -= n
+                }
+                body = String(data: bodyData, encoding: .utf8) ?? ""
+            }
+
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+            response.withCString { ptr in _ = Darwin.send(clientFd, ptr, strlen(ptr), 0) }
+            Darwin.close(clientFd)
+
+            if !body.isEmpty { handleGenaNotify(body: body) }
+        }
+    }
+
+    private func getLocalIPAddress() -> String? {
+        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPtr) == 0 else { return nil }
+        defer { freeifaddrs(ifaddrPtr) }
+        var ptr = ifaddrPtr
+        while let current = ptr {
+            let interface = current.pointee
+            if interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name.hasPrefix("en") {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+                    return String(cString: hostname)
+                }
+            }
+            ptr = current.pointee.ifa_next
+        }
+        return nil
+    }
+
+    private func subscribeGena(eventSubUrl: String) {
+        let port = genaServerPort
+        guard port > 0, let localIp = getLocalIPAddress() else { return }
+        let callbackUrl = "http://\(localIp):\(port)/notify"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self, let url = URL(string: eventSubUrl) else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "SUBSCRIBE"
+            request.setValue("<\(callbackUrl)>", forHTTPHeaderField: "CALLBACK")
+            request.setValue("upnp:event", forHTTPHeaderField: "NT")
+            request.setValue("Second-1800", forHTTPHeaderField: "TIMEOUT")
+
+            let semaphore = DispatchSemaphore(value: 0)
+            var allHeaders: [AnyHashable: Any]?
+            let task = self.session.dataTask(with: request) { _, response, _ in
+                allHeaders = (response as? HTTPURLResponse)?.allHeaderFields
+                semaphore.signal()
+            }
+            task.resume()
+            semaphore.wait()
+
+            guard let sid = allHeaders?.first(where: { ($0.key as? String)?.lowercased() == "sid" })?.value as? String
+            else { return }
+
+            self.genaSubscriptionId = sid
+            let renewTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+            renewTimer.schedule(deadline: .now() + 25 * 60)
+            renewTimer.setEventHandler { [weak self] in
+                self?.renewGena(eventSubUrl: eventSubUrl, sid: sid)
+            }
+            self.genaRenewalTimer = renewTimer
+            renewTimer.resume()
+        }
+    }
+
+    private func renewGena(eventSubUrl: String, sid: String) {
+        guard genaSubscriptionId == sid, let url = URL(string: eventSubUrl) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "SUBSCRIBE"
+        request.setValue(sid, forHTTPHeaderField: "SID")
+        request.setValue("Second-1800", forHTTPHeaderField: "TIMEOUT")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = session.dataTask(with: request) { _, _, _ in semaphore.signal() }
+        task.resume()
+        semaphore.wait()
+
+        guard genaSubscriptionId == sid else { return }
+        let renewTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        renewTimer.schedule(deadline: .now() + 25 * 60)
+        renewTimer.setEventHandler { [weak self] in
+            self?.renewGena(eventSubUrl: eventSubUrl, sid: sid)
+        }
+        genaRenewalTimer = renewTimer
+        renewTimer.resume()
+    }
+
+    private func unsubscribeGena() {
+        genaRenewalTimer?.cancel()
+        genaRenewalTimer = nil
+        guard let eventSubUrl = activeDeviceEventSubUrl,
+              let sid = genaSubscriptionId,
+              let url = URL(string: eventSubUrl) else { return }
+        genaSubscriptionId = nil
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "UNSUBSCRIBE"
+        request.setValue(sid, forHTTPHeaderField: "SID")
+        session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    private func stopGena() {
+        unsubscribeGena()
+        stopGenaServer()
+        activeDeviceEventSubUrl = nil
+    }
+
+    private func handleGenaNotify(body: String) {
+        guard let outerData = body.data(using: .utf8) else { return }
+        let outerParser = SimpleXMLElementParser(data: outerData, targetElement: "LastChange")
+        guard let lastChangeXml = outerParser.parse(), !lastChangeXml.isEmpty else { return }
+        guard let innerData = lastChangeXml.data(using: .utf8) else { return }
+        let eventParser = GenaEventXMLParser(data: innerData)
+        let (transportState, relTimeStr) = eventParser.parse()
+        guard let state = transportState else { return }
+        let mappedState: String
+        switch state {
+        case "PLAYING": mappedState = "playing"
+        case "PAUSED_PLAYBACK": mappedState = "paused"
+        case "TRANSITIONING": mappedState = "buffering"
+        default: mappedState = "idle"
+        }
+        let positionTicks = relTimeStr.flatMap { parseDlnaTime($0) }
+        DispatchQueue.main.async { [weak self] in
+            self?.consecutivePollFailures = 0
+            self?.emitEvent(state: mappedState, positionTicks: positionTicks)
+        }
+    }
+}
+
+// MARK: - Simple XML Element Parser
+
+private final class SimpleXMLElementParser: NSObject, XMLParserDelegate {
+    private let parser: XMLParser
+    private let targetElement: String
+    private var currentText = ""
+    private var result: String?
+
+    init(data: Data, targetElement: String) {
+        self.parser = XMLParser(data: data)
+        self.targetElement = targetElement
+        super.init()
+        parser.delegate = self
+    }
+
+    func parse() -> String? {
+        parser.parse()
+        return result
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+        currentText = ""
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        currentText += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        if elementName == targetElement && result == nil {
+            result = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+}
+
+// MARK: - XML Parser for Device Description
+
+private final class DlnaDeviceXMLParser: NSObject, XMLParserDelegate {
+    private let parser: XMLParser
+    private let avTransportURN: String
+
+    var friendlyName: String?
+    var modelName: String?
+    var avTransportControlURL: String?
+    var avTransportEventSubURL: String?
+    var renderingControlURL: String?
+
+    private var currentText = ""
+    private var inService = false
+    private var currentServiceType: String?
+    private var currentControlURL: String?
+    private var currentEventSubURL: String?
+
+    init(data: Data, avTransportURN: String) {
+        self.parser = XMLParser(data: data)
+        self.avTransportURN = avTransportURN
+        super.init()
+        parser.delegate = self
+    }
+
+    func parse() -> Bool {
+        return parser.parse()
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+        currentText = ""
+        if elementName == "service" {
+            inService = true
+            currentServiceType = nil
+            currentControlURL = nil
+            currentEventSubURL = nil
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        currentText += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch elementName {
+        case "friendlyName":
+            if friendlyName == nil { friendlyName = trimmed }
+        case "modelName":
+            if modelName == nil { modelName = trimmed }
+        case "serviceType":
+            if inService { currentServiceType = trimmed }
+        case "controlURL":
+            if inService { currentControlURL = trimmed }
+        case "eventSubURL":
+            if inService { currentEventSubURL = trimmed }
+        case "service":
+            if inService {
+                if currentServiceType == avTransportURN, let url = currentControlURL {
+                    avTransportControlURL = url
+                    if let sub = currentEventSubURL { avTransportEventSubURL = sub }
+                }
+                if currentServiceType == "urn:schemas-upnp-org:service:RenderingControl:1", let url = currentControlURL {
+                    renderingControlURL = url
+                }
+                inService = false
+            }
+        default:
+            break
+        }
+    }
+}
+
+// MARK: - GENA LastChange Event XML Parser
+
+private final class GenaEventXMLParser: NSObject, XMLParserDelegate {
+    private let parser: XMLParser
+    private var transportState: String?
+    private var relativeTimePosition: String?
+
+    init(data: Data) {
+        self.parser = XMLParser(data: data)
+        super.init()
+        parser.delegate = self
+    }
+
+    func parse() -> (String?, String?) {
+        parser.parse()
+        return (transportState, relativeTimePosition)
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+        switch elementName {
+        case "TransportState": transportState = attributes["val"]
+        case "RelativeTimePosition": relativeTimePosition = attributes["val"]
+        default: break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {}
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {}
+}
+
+// MARK: - Errors
+
+enum DlnaError: LocalizedError {
+    case noActiveSession
+    case invalidUrl
+    case controllerDeallocated
+    case castSuperseded
+    case httpError(action: String, statusCode: Int, upnpCode: Int?)
+
+    var errorDescription: String? {
+        switch self {
+        case .noActiveSession: return "No active DLNA session."
+        case .invalidUrl: return "Invalid DLNA control URL."
+        case .controllerDeallocated: return "DLNA controller was deallocated."
+        case .castSuperseded: return "A newer DLNA cast or a stop took over."
+        case .httpError(let action, let code, let upnpCode):
+            if let upnpCode {
+                return "DLNA \(action) failed with HTTP \(code) (UPnP \(upnpCode))."
+            }
+            return "DLNA \(action) failed with HTTP \(code)."
+        }
+    }
+}
