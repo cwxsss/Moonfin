@@ -18,9 +18,9 @@ Future<void> showLibraryQuickVisibilityDialog(BuildContext context) async {
   // 弹窗关闭后自动刷新，确保首页、轮播与侧边栏立即同步隐藏媒体库
   try {
     final viewsRepo = GetIt.instance<UserViewsRepository>();
-    await viewsRepo.fetchUserViews(forceRefresh: true);
+    viewsRepo.invalidateViews();
   } catch (_) {}
-  homeRefreshBus.request(newMediaBar: true, force: true);
+  homeRefreshBus.request(newMediaBar: true);
 }
 
 class LibraryQuickVisibilityDialog extends StatefulWidget {
@@ -93,8 +93,7 @@ class _LibraryQuickVisibilityDialogState
 
     try {
       await _viewsRepo.updateUserConfiguration(updated);
-      unawaited(_viewsRepo.fetchUserViews(forceRefresh: true));
-      homeRefreshBus.request(newMediaBar: true, force: true);
+      homeRefreshBus.request(newMediaBar: true);
     } catch (_) {
       if (!mounted) return;
       setState(() => _config = config);
@@ -113,8 +112,7 @@ class _LibraryQuickVisibilityDialogState
 
     try {
       await _viewsRepo.updateUserConfiguration(updated);
-      unawaited(_viewsRepo.fetchUserViews(forceRefresh: true));
-      homeRefreshBus.request(newMediaBar: true, force: true);
+      homeRefreshBus.request(newMediaBar: true);
     } catch (_) {
       if (!mounted) return;
       setState(() => _config = config);

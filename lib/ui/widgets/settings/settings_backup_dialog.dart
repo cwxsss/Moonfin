@@ -110,7 +110,7 @@ class _SettingsBackupDialogState extends State<SettingsBackupDialog>
 
     try {
       final count = await _prefs.importPreferencesJson(text);
-      homeRefreshBus.request(newMediaBar: true, force: true);
+      homeRefreshBus.request(newMediaBar: true);
       if (!mounted) return;
       setState(() {
         _statusMessage = '成功导入并应用了 $count 项个性化配置！';
