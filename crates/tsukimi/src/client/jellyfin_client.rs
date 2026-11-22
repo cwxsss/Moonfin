@@ -888,6 +888,19 @@ impl JellyfinClient {
         self.request(&path, &[]).await
     }
 
+    pub async fn get_excluded_libraries(&self) -> Vec<String> {
+        match self.get_current_user().await {
+            Ok(user) => {
+                if let Some(config) = user.configuration {
+                    config.my_media_excludes
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub async fn get_latest(&self, id: &str) -> Result<Vec<SimpleListItem>> {
         let s = self.session();
         let path = format!("Users/{}/Items/Latest", s.account.user_id);

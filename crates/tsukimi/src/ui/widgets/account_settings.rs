@@ -125,6 +125,11 @@ mod imp {
         pub descriptors_listbox: TemplateChild<gtk::ListBox>,
 
         #[template_child]
+        pub manage_libraries_subpage: TemplateChild<adw::NavigationPage>,
+        #[template_child]
+        pub manage_libraries_listbox: TemplateChild<gtk::ListBox>,
+
+        #[template_child]
         pub preferred_version_list_stack: TemplateChild<gtk::Stack>,
 
         #[template_child]
@@ -782,5 +787,89 @@ impl AccountSettings {
 
             group.append(&row);
         }
+    }
+
+    #[template_callback]
+    fn manage_libraries_activated_cb(&self) {
+        let subpage = self.imp().manage_libraries_subpage.get();
+        self.load_manage_libraries();
+        self.push_subpage(&subpage);
+    }
+
+    fn load_manage_libraries(&self) {
+        let imp = self.imp();
+        let listbox = imp.manage_libraries_listbox.get();
+        listbox.remove_all();
+
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = obj)]
+            self,
+            async move {
+                let user_id = JELLYFIN_CLIENT.session().account.user_id.clone();
+                if user_id.is_empty() {
+                    let empty_row = adw::ActionRow::builder()
+                        .title(gettext("No active server connected"))
+                        .build();
+                    obj.imp().manage_libraries_listbox.append(&empty_row);
+                    return;
+                }
+
+                let result = JELLYFIN_CLIENT.get_library().await;
+                match result {
+                    Ok(list) => {
+                        let listbox = obj.imp().manage_libraries_listbox.get();
+                        listbox.remove_all();
+                        if list.items.is_empty() {
+                            let empty_row = adw::ActionRow::builder()
+                                .title(gettext("No libraries found"))
+                                .build();
+                            listbox.append(&empty_row);
+                            return;
+                        }
+
+                        let server_excludes = JELLYFIN_CLIENT.get_excluded_libraries().await;
+                        for view in list.items {
+                            let user_id = user_id.clone();
+                            let view_id = view.id.clone();
+                            let is_server_hidden = server_excludes.contains(&view_id);
+                            let is_local_hidden = SETTINGS.is_library_hidden(&user_id, &view_id);
+                            let is_hidden = is_local_hidden || is_server_hidden;
+
+                            let subtitle = if is_server_hidden {
+                                format!(
+                                    "{} ({})",
+                                    view.collection_type.as_deref().unwrap_or("library"),
+                                    gettext("Hidden on server")
+                                )
+                            } else {
+                                view.collection_type.clone().unwrap_or_else(|| "library".to_string())
+                            };
+
+                            let switch_row = adw::SwitchRow::builder()
+                                .title(&view.name)
+                                .subtitle(&subtitle)
+                                .active(!is_hidden)
+                                .build();
+
+                            let window = obj.window();
+                            switch_row.connect_active_notify(move |row| {
+                                let is_active = row.is_active();
+                                let _ = SETTINGS.set_library_hidden(&user_id, &view_id, !is_active);
+                                window.on_home_update();
+                            });
+
+                            listbox.append(&switch_row);
+                        }
+                    }
+                    Err(e) => {
+                        let error_row = adw::ActionRow::builder()
+                            .title(gettext("Failed to load libraries"))
+                            .subtitle(e.to_string())
+                            .build();
+                        obj.imp().manage_libraries_listbox.append(&error_row);
+                    }
+                }
+            }
+        ));
     }
 }

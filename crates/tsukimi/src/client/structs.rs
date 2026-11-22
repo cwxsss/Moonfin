@@ -583,6 +583,16 @@ pub struct LoginResponse {
     pub access_token: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct UserConfiguration {
+    #[serde(rename = "MyMediaExcludes", default)]
+    pub my_media_excludes: Vec<String>,
+    #[serde(rename = "LatestItemsExcludes", default)]
+    pub latest_items_excludes: Vec<String>,
+    #[serde(rename = "OrderedViews", default)]
+    pub ordered_views: Vec<String>,
+}
+
 #[derive(Deserialize)]
 pub struct User {
     #[serde(rename = "Id")]
@@ -591,6 +601,8 @@ pub struct User {
     pub primary_image_tag: Option<String>,
     #[serde(rename = "Policy")]
     pub policy: Policy,
+    #[serde(rename = "Configuration", default)]
+    pub configuration: Option<UserConfiguration>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -328,5 +328,11 @@
       <summary>Whether the rec2100 PQ is enabled</summary>
       <default>false</default>
     </key>
+
+    <key type="s" name="hidden-libraries">
+      <summary>Map of user ID or server URL to list of hidden library IDs</summary>
+      <description>{"user_id": ["library_id1", "library_id2"]}</description>
+      <default>'{}'</default>
+    </key>
   </schema>
 </schemalist>

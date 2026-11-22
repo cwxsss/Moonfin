@@ -1,4 +1,7 @@
-use std::ops::Deref;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+};
 
 use gtk::{
     gio,
@@ -89,6 +92,7 @@ impl Settings {
     const KEY_MPV_DANMAKU_SHADOW_OFFSET: &'static str = "mpv-danmaku-shadow-offset";
     const KEY_REC2100_PQ_ENABLED: &'static str = "is-rec2100-pq-enabled";
     const KEY_DANMAKU_CACHE_MAP: &'static str = "danmaku-cache-map";
+    const KEY_HIDDEN_LIBRARIES: &'static str = "hidden-libraries";
 
     fn bind_setting(&self, key: &str, object: &impl IsA<glib::Object>, property: &str) {
         self.bind(key, object, property).build();
@@ -146,6 +150,52 @@ impl Settings {
 
     pub fn set_danmaku_cache_map(&self, value: &str) -> Result<(), glib::BoolError> {
         self.set_string(Self::KEY_DANMAKU_CACHE_MAP, value)
+    }
+
+    pub fn hidden_libraries(&self, user_id: &str) -> HashSet<String> {
+        if user_id.is_empty() {
+            return HashSet::new();
+        }
+        let map: HashMap<String, Vec<String>> =
+            serde_json::from_str(self.string(Self::KEY_HIDDEN_LIBRARIES).as_ref()).unwrap_or_default();
+        map.get(user_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn set_hidden_libraries(
+        &self,
+        user_id: &str,
+        hidden_ids: HashSet<String>,
+    ) -> Result<(), glib::BoolError> {
+        let mut map: HashMap<String, Vec<String>> =
+            serde_json::from_str(self.string(Self::KEY_HIDDEN_LIBRARIES).as_ref()).unwrap_or_default();
+        map.insert(user_id.to_string(), hidden_ids.into_iter().collect());
+        self.set_string(
+            Self::KEY_HIDDEN_LIBRARIES,
+            &serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()),
+        )
+    }
+
+    pub fn is_library_hidden(&self, user_id: &str, library_id: &str) -> bool {
+        self.hidden_libraries(user_id).contains(library_id)
+    }
+
+    pub fn set_library_hidden(
+        &self,
+        user_id: &str,
+        library_id: &str,
+        hidden: bool,
+    ) -> Result<(), glib::BoolError> {
+        let mut ids = self.hidden_libraries(user_id);
+        if hidden {
+            ids.insert(library_id.to_string());
+        } else {
+            ids.remove(library_id);
+        }
+        self.set_hidden_libraries(user_id, ids)
     }
 
     pub fn is_overlay(&self) -> bool {

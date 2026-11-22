@@ -176,6 +176,19 @@
                 <property name="subtitle" translatable="yes">Jellyfin only</property>
               </object>
             </child>
+            <child>
+              <object class="AdwActionRow" id="manage_libraries_row">
+                <property name="title" translatable="yes">Manage Libraries</property>
+                <property name="subtitle" translatable="yes">Hide or show specific libraries on the home page</property>
+                <property name="activatable">true</property>
+                <signal name="activated" handler="manage_libraries_activated_cb" swapped="yes"/>
+                <child type="suffix">
+                  <object class="GtkImage">
+                    <property name="icon-name">go-next-symbolic</property>
+                  </object>
+                </child>
+              </object>
+            </child>
           </object>
         </child>
         <child>
@@ -799,5 +812,48 @@
     <property name="accept-label" translatable="yes">Change folder</property>
     <property name="modal">true</property>
     <property name="title" translatable="yes">Select new mpv config folder</property>
+  </object>
+  <object class="AdwNavigationPage" id="manage_libraries_subpage">
+    <property name="title" translatable="yes">Manage Libraries</property>
+    <property name="tag">manage-libraries</property>
+    <property name="child">
+      <object class="AdwToolbarView">
+        <child type="top">
+          <object class="AdwHeaderBar">
+            <property name="show-end-title-buttons">false</property>
+            <style>
+              <class name="flat"/>
+            </style>
+          </object>
+        </child>
+        <property name="content">
+          <object class="AdwClamp">
+            <child>
+              <object class="GtkBox">
+                <property name="orientation">vertical</property>
+                <property name="margin-start">30</property>
+                <property name="margin-end">30</property>
+                <property name="margin-top">24</property>
+                <property name="margin-bottom">24</property>
+                <property name="spacing">12</property>
+                <child>
+                  <object class="AdwPreferencesGroup" id="manage_libraries_group">
+                    <property name="title" translatable="yes">Libraries</property>
+                    <property name="description" translatable="yes">Toggle libraries to display or hide on the home page</property>
+                    <child>
+                      <object class="GtkListBox" id="manage_libraries_listbox">
+                        <style>
+                          <class name="boxed-list"/>
+                        </style>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </property>
   </object>
 </interface>

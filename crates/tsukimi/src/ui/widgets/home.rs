@@ -358,10 +358,19 @@ impl HomePage {
         while let Some(event) = events.recv().await {
             match event {
                 CacheEvent::Data { data, source } => {
+                    let user_id = JELLYFIN_CLIENT.session().account.user_id.clone();
+                    let hidden_set = SETTINGS.hidden_libraries(&user_id);
+                    let server_excludes = JELLYFIN_CLIENT.get_excluded_libraries().await;
+                    let filtered_items: Vec<SimpleListItem> = data
+                        .items
+                        .into_iter()
+                        .filter(|item| !hidden_set.contains(&item.id) && !server_excludes.contains(&item.id))
+                        .collect();
+
                     if enable_cache || matches!(source, CacheSource::Network) {
-                        hortu.set_items(data.items.clone());
+                        hortu.set_items(filtered_items.clone());
                     }
-                    self.setup_libsview(data.items, enable_cache);
+                    self.setup_libsview(filtered_items, enable_cache);
                 }
                 CacheEvent::Error(e) => {
                     self.toast(e.to_user_facing());
