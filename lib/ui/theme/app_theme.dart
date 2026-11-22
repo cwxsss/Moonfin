@@ -88,6 +88,10 @@ class AppTheme {
       // Cyrillic a title can carry. The emoji fonts come after it, one per
       // platform, since an emoji typed next to text otherwise shows as a box.
       fontFamilyFallback: const [
+        'Microsoft YaHei',
+        'PingFang SC',
+        'Source Han Sans SC',
+        'Noto Sans SC',
         'NotoSans',
         'Apple Color Emoji',
         'Segoe UI Emoji',

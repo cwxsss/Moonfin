@@ -193,6 +193,18 @@ class _GeneralScreenState extends State<_GeneralScreen> {
                 ],
               ),
             ],
+            _SectionHeader('备份与还原'),
+            adaptiveListSection(
+              children: [
+                _TvSettingsListTile(
+                  leading: const Icon(Icons.settings_backup_restore),
+                  title: const Text('导入与导出配置'),
+                  subtitle: const Text('备份或还原应用配置与偏好设置'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => showSettingsBackupDialog(context),
+                ),
+              ],
+            ),
           ],
         ),
       ),

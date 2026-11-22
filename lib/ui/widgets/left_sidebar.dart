@@ -149,7 +149,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
       if (!mounted || _homeFocusNode.context == null) return;
       // Expand the rail directly instead of relying on the focus listener,
       // whose expansion can be blocked right after this sidebar mounts.
-      if (!_isMobile && !_isExpanded) {
+      if (PlatformDetection.isTV && !_isMobile && !_isExpanded) {
         _expand();
       }
       _homeFocusNode.requestFocus();
@@ -436,7 +436,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
           if (!mounted) return;
           _exitSidebarToContent();
         });
-      } else if (_canExpandViaFocus) {
+      } else if (_canExpandViaFocus && PlatformDetection.isTV) {
         _expand();
         _focusHomeTimer?.cancel();
         _focusHomeTimer = Timer(Duration.zero, () {
@@ -453,7 +453,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
           }
         });
       }
-    } else if (!hasFocus && _sidebarHadFocus && _canExpandViaFocus) {
+    } else if (!hasFocus && _sidebarHadFocus && _canExpandViaFocus && PlatformDetection.isTV) {
       _collapse();
     }
     _sidebarHadFocus = hasFocus;
@@ -495,7 +495,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
       setState(() => _canExpandViaFocus = true);
       // A focus handoff can land while the gate is closed, which leaves a
       // focused item inside a collapsed rail. Heal that now.
-      if (_sidebarFocus.hasFocus && !_isExpanded) {
+      if (_sidebarFocus.hasFocus && !_isExpanded && PlatformDetection.isTV) {
         _expand();
       }
     });
@@ -882,12 +882,16 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
       ),
     );
 
+    if (!desktopHoverRail) return rail;
     final autoExpand = _prefs.get(UserPreferences.autoExpandSidebarOnHover);
-    if (!desktopHoverRail || !autoExpand) return rail;
 
     return MouseRegion(
-      onEnter: (_) => _expand(),
-      onExit: (_) => _collapse(),
+      onEnter: (_) {
+        if (autoExpand) _expand();
+      },
+      onExit: (_) {
+        if (_isExpanded) _collapse();
+      },
       child: rail,
     );
   }
@@ -1210,27 +1214,23 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                               IconButton(
                                 icon: const Icon(
                                   Icons.tune_rounded,
-                                  size: 16,
+                                  size: 15,
                                   color: Colors.white70,
                                 ),
                                 tooltip: l10n.libraryVisibility,
-                                splashRadius: 14,
+                                splashRadius: 12,
                                 padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
+                                constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
                                 onPressed: () =>
                                     showLibraryQuickVisibilityDialog(context),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 4),
                               AnimatedRotation(
                                 turns: _librariesExpanded ? 0.5 : 0,
                                 duration: _kExpandDuration,
                                 child: Icon(
                                   Icons.expand_more,
-                                  size:
-                                      ((PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi)) &&
-                                          !PlatformDetection.isTV)
-                                      ? 18
-                                      : 16,
+                                  size: 16,
                                   color: Colors.white.withValues(alpha: 0.5),
                                 ),
                               ),
@@ -1662,7 +1662,7 @@ class _SidebarItemState extends State<_SidebarItem> {
     final iconSlotWidth = desktopSidebar ? 36.0 : 32.0;
     final labelFontSize = desktopSidebar ? 16.0 : 14.0;
 
-    return Padding(
+    Widget itemWidget = Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: MouseRegion(
         onEnter: (_) => setState(() => _isHovered = true),
@@ -1684,8 +1684,8 @@ class _SidebarItemState extends State<_SidebarItem> {
               duration: const Duration(milliseconds: 150),
               height: desktopSidebar ? 44 : 40,
               padding: EdgeInsets.only(
-                left: _tvCompact ? 12 : 18,
-                right: _tvCompact ? 12 : 18,
+                left: _tvCompact ? 12 : 14,
+                right: _tvCompact ? 12 : 8,
               ),
               decoration: BoxDecoration(
                 color: tvFocused
@@ -1717,7 +1717,7 @@ class _SidebarItemState extends State<_SidebarItem> {
                     ),
                   ),
                   if (widget.showLabel) ...[
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         widget.label,
@@ -1738,6 +1738,19 @@ class _SidebarItemState extends State<_SidebarItem> {
         ),
       ),
     );
+
+    if (!widget.showLabel && widget.label.isNotEmpty) {
+      itemWidget = Tooltip(
+        message: widget.label,
+        waitDuration: const Duration(milliseconds: 200),
+        preferBelow: false,
+        verticalOffset: 0,
+        margin: const EdgeInsets.only(left: 60),
+        child: itemWidget,
+      );
+    }
+
+    return itemWidget;
   }
 }
 
@@ -1792,7 +1805,7 @@ class _SidebarLibraryItemState extends State<_SidebarLibraryItem> {
         (desktopSidebar && _isHovered) ||
         InputModeTracker.showFocusVisuals(context, _isFocused);
     final tvFocused = PlatformDetection.isTV && _isFocused;
-    return Padding(
+    Widget itemWidget = Padding(
       padding: const EdgeInsets.symmetric(vertical: 1),
       child: MouseRegion(
         onEnter: (_) => setState(() => _isHovered = true),
@@ -1850,6 +1863,19 @@ class _SidebarLibraryItemState extends State<_SidebarLibraryItem> {
         ),
       ),
     );
+
+    if (!widget.showLabel && widget.label.isNotEmpty) {
+      itemWidget = Tooltip(
+        message: widget.label,
+        waitDuration: const Duration(milliseconds: 200),
+        preferBelow: false,
+        verticalOffset: 0,
+        margin: const EdgeInsets.only(left: 60),
+        child: itemWidget,
+      );
+    }
+
+    return itemWidget;
   }
 }
 

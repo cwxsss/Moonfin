@@ -4991,6 +4991,98 @@ class UserPreferences extends ChangeNotifier {
 
     return result;
   }
+
+  /// 导出所有用户配置为格式化 JSON 字符串
+  String exportPreferencesJson() {
+    final map = <String, dynamic>{};
+    for (final key in _store.keys) {
+      final lk = key.toLowerCase();
+      // 过滤临时敏感数据与凭证
+      if (lk.contains('token') ||
+          lk.contains('password') ||
+          lk.contains('secret') ||
+          lk.contains('credential')) {
+        continue;
+      }
+      try {
+        final b = _store.getBool(key);
+        if (b != null) {
+          map[key] = b;
+          continue;
+        }
+        final i = _store.getInt(key);
+        if (i != null) {
+          map[key] = i;
+          continue;
+        }
+        final d = _store.getDouble(key);
+        if (d != null) {
+          map[key] = d;
+          continue;
+        }
+        final sl = _store.getStringList(key);
+        if (sl != null) {
+          map[key] = sl;
+          continue;
+        }
+        final s = _store.getString(key);
+        if (s != null) {
+          map[key] = s;
+          continue;
+        }
+      } catch (_) {}
+    }
+    final result = {
+      'app': 'Moonfin',
+      'version': '1.0',
+      'exportTime': DateTime.now().toIso8601String(),
+      'preferences': map,
+    };
+    return const JsonEncoder.withIndent('  ').convert(result);
+  }
+
+  /// 从 JSON 字符串还原并导入配置
+  Future<int> importPreferencesJson(String jsonString) async {
+    final decoded = jsonDecode(jsonString);
+    final Map<String, dynamic> prefsMap;
+    if (decoded is Map<String, dynamic>) {
+      if (decoded.containsKey('preferences') && decoded['preferences'] is Map<String, dynamic>) {
+        prefsMap = decoded['preferences'] as Map<String, dynamic>;
+      } else {
+        prefsMap = decoded;
+      }
+    } else {
+      throw const FormatException('无效的配置格式');
+    }
+
+    var count = 0;
+    for (final entry in prefsMap.entries) {
+      final key = entry.key;
+      final val = entry.value;
+      if (val == null) continue;
+
+      if (val is bool) {
+        _store.setBool(key, val);
+        count++;
+      } else if (val is int) {
+        _store.setInt(key, val);
+        count++;
+      } else if (val is double) {
+        _store.setDouble(key, val);
+        count++;
+      } else if (val is String) {
+        _store.setString(key, val);
+        count++;
+      } else if (val is List) {
+        _store.setStringList(key, val.map((e) => e.toString()).toList());
+        count++;
+      }
+    }
+
+    await flushPendingWrites();
+    notifyListeners();
+    return count;
+  }
 }
 
 /// The ratings settings one surface reads.

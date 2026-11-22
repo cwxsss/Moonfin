@@ -9,12 +9,18 @@ import '../../l10n/app_localizations.dart';
 import '../navigation/home_refresh_bus.dart';
 
 /// 类似 Hills 的媒体库快速显示/隐藏管理对话框
-Future<void> showLibraryQuickVisibilityDialog(BuildContext context) {
-  return showDialog<void>(
+Future<void> showLibraryQuickVisibilityDialog(BuildContext context) async {
+  await showDialog<void>(
     context: context,
     barrierDismissible: true,
     builder: (context) => const LibraryQuickVisibilityDialog(),
   );
+  // 弹窗关闭后自动刷新，确保首页、轮播与侧边栏立即同步隐藏媒体库
+  try {
+    final viewsRepo = GetIt.instance<UserViewsRepository>();
+    await viewsRepo.fetchUserViews(forceRefresh: true);
+  } catch (_) {}
+  homeRefreshBus.request(newMediaBar: true, force: true);
 }
 
 class LibraryQuickVisibilityDialog extends StatefulWidget {
@@ -87,7 +93,8 @@ class _LibraryQuickVisibilityDialogState
 
     try {
       await _viewsRepo.updateUserConfiguration(updated);
-      homeRefreshBus.request(newMediaBar: true);
+      unawaited(_viewsRepo.fetchUserViews(forceRefresh: true));
+      homeRefreshBus.request(newMediaBar: true, force: true);
     } catch (_) {
       if (!mounted) return;
       setState(() => _config = config);
@@ -106,7 +113,8 @@ class _LibraryQuickVisibilityDialogState
 
     try {
       await _viewsRepo.updateUserConfiguration(updated);
-      homeRefreshBus.request(newMediaBar: true);
+      unawaited(_viewsRepo.fetchUserViews(forceRefresh: true));
+      homeRefreshBus.request(newMediaBar: true, force: true);
     } catch (_) {
       if (!mounted) return;
       setState(() => _config = config);

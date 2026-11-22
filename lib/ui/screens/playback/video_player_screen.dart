@@ -5481,10 +5481,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (!_transportDocked) ...[
-                  _buildAboveSeekbarTransportRow(),
-                  const SizedBox(height: AppSpacing.spaceXs),
-                ],
+                if (!_transportDocked)
+                  Transform.translate(
+                    offset: const Offset(0, 20),
+                    child: _buildAboveSeekbarTransportRow(),
+                  ),
                 _buildSeekbar(),
                 const SizedBox(height: AppSpacing.spaceXs),
                 if (_transportDocked)

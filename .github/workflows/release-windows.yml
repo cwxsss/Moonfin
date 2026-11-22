@@ -72,13 +72,17 @@ jobs:
           files: Moonfin_Windows_v*.exe
           name: Moonfin Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.2') }}
           body: |
-            ## Moonfin Windows Release (支持仿 Hills 右键管理媒体库显隐)
+            ## Moonfin Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.6') }}
             
             ### ✨ 更新内容
-            - 增加类似 Hills 的侧边栏右键上下文菜单。
-            - 支持右键点击当前服务器/头像或侧边栏“媒体库”条目，快速弹出媒体库管理弹窗。
-            - 弹窗中支持点击眼睛图标一键切换媒体库显示/隐藏，实时同步生效。
-            - 支持【恢复默认】一键恢复全部显示。
+            - **导航栏防误展**：桌面端点击音频、字幕、更多等弹窗关闭后，焦点恢复不再触发左侧侧边栏自动展开。
+            - **导航栏智能收起**：展开侧边栏后，鼠标移出导航栏区域自动收起。
+            - **媒体库标题补全**：修复聚合栏折叠显示时文字溢出被截断问题，完整显示“媒体库”标题。
+            - **全局中文字体统一**：统一引入微软雅黑 (Microsoft YaHei)、苹方 (PingFang SC)、思源黑体 (Source Han Sans SC) 回退栈，彻底解决设置与按钮字体粗细高低不一致问题。
+            - **媒体库显隐即时生效**：媒体库显隐修改关闭后自动强制刷新并清除已隐藏库数据。
+            - **播放器控制栏优化**：播放/暂停/快进快退按键进一步下移贴近进度条上方，观影遮挡更少。
+            - **侧边栏悬浮提示**：侧边栏收起状态下，鼠标悬停于图标上即显示文字气泡（首页、搜索、观影派对、媒体库、设置等）。
+            - **配置导入与导出**：常规设置中新增“备份与还原”模块，支持完整导出 JSON 配置到剪贴板或文件，以及一键导入恢复配置。
           draft: false
           prerelease: false
         env:
