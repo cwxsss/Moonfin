@@ -1187,18 +1187,37 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                     showLabel: _showLabels,
                     onSecondaryTap: () => showLibraryQuickVisibilityDialog(context),
                     trailing: _showLabels
-                        ? AnimatedRotation(
-                            turns: _librariesExpanded ? 0.5 : 0,
-                            duration: _kExpandDuration,
-                            child: Icon(
-                              Icons.expand_more,
-                              size:
-                                  ((PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi)) &&
-                                      !PlatformDetection.isTV)
-                                  ? 18
-                                  : 16,
-                              color: Colors.white.withValues(alpha: 0.5),
-                            ),
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.tune_rounded,
+                                  size: 16,
+                                  color: Colors.white70,
+                                ),
+                                tooltip: l10n.libraryVisibility,
+                                splashRadius: 14,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () =>
+                                    showLibraryQuickVisibilityDialog(context),
+                              ),
+                              const SizedBox(width: 8),
+                              AnimatedRotation(
+                                turns: _librariesExpanded ? 0.5 : 0,
+                                duration: _kExpandDuration,
+                                child: Icon(
+                                  Icons.expand_more,
+                                  size:
+                                      ((PlatformDetection.isDesktop || (PlatformDetection.isWeb && !PlatformDetection.useMobileUi)) &&
+                                          !PlatformDetection.isTV)
+                                      ? 18
+                                      : 16,
+                                  color: Colors.white.withValues(alpha: 0.5),
+                                ),
+                              ),
+                            ],
                           )
                         : null,
                     onPressed: () => setState(
@@ -1437,9 +1456,13 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
           return KeyEventResult.ignored;
         },
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onTap: () {
             _onNavigate();
             showUserMenu(context);
+          },
+          onSecondaryTap: () {
+            showLibraryQuickVisibilityDialog(context);
           },
           onSecondaryTapUp: (details) {
             _showServerContextMenu(context, details.globalPosition);
@@ -1629,6 +1652,7 @@ class _SidebarItemState extends State<_SidebarItem> {
             return KeyEventResult.ignored;
           },
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: widget.onPressed,
             onSecondaryTap: widget.onSecondaryTap,
             child: AnimatedContainer(
@@ -1758,6 +1782,7 @@ class _SidebarLibraryItemState extends State<_SidebarLibraryItem> {
             return KeyEventResult.ignored;
           },
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: widget.onPressed,
             onSecondaryTap: widget.onSecondaryTap,
             child: AnimatedContainer(
