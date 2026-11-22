@@ -44,6 +44,7 @@ import 'server_messages_nav_slot.dart';
 import 'unread_badge.dart';
 import 'shuffle_overlay.dart';
 import 'user_menu_dialog.dart';
+import 'library_quick_visibility_dialog.dart';
 
 import 'package:playback_core/playback_core.dart';
 import '../../data/models/aggregated_item.dart';
@@ -1169,6 +1170,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                       baseColor: nextMainSidebarColor(),
                       showLabel: _showLabels,
                       onPressed: () => _openLibrary(lib),
+                      onSecondaryTap: () => showLibraryQuickVisibilityDialog(context),
                     )
                 else if (showLibraries && navLibraries.isNotEmpty) ...[
                   _SidebarItem(
@@ -1183,6 +1185,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                     ),
                     label: l10n.libraries,
                     showLabel: _showLabels,
+                    onSecondaryTap: () => showLibraryQuickVisibilityDialog(context),
                     trailing: _showLabels
                         ? AnimatedRotation(
                             turns: _librariesExpanded ? 0.5 : 0,
@@ -1216,6 +1219,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                                     baseColor: nextLibrarySidebarColor(),
                                     showLabel: _showLabels,
                                     onPressed: () => _openLibrary(lib),
+                                    onSecondaryTap: () => showLibraryQuickVisibilityDialog(context),
                                   ),
                                 )
                                 .toList(),
@@ -1437,10 +1441,84 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
             _onNavigate();
             showUserMenu(context);
           },
+          onSecondaryTapUp: (details) {
+            _showServerContextMenu(context, details.globalPosition);
+          },
           child: content,
         ),
       ),
     );
+  }
+
+  void _showServerContextMenu(BuildContext context, Offset globalPosition) async {
+    final l10n = AppLocalizations.of(context);
+    final result = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        globalPosition.dx + 1,
+        globalPosition.dy + 1,
+      ),
+      color: const Color(0xFF222222),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Colors.white12),
+      ),
+      items: [
+        PopupMenuItem<String>(
+          value: 'libraries',
+          height: 40,
+          child: Row(
+            children: [
+              const Icon(Icons.video_library_outlined, size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(
+                l10n.libraries,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'switch_account',
+          height: 40,
+          child: Row(
+            children: [
+              const Icon(Icons.switch_account_outlined, size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(
+                l10n.switchUser,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'refresh',
+          height: 40,
+          child: Row(
+            children: [
+              const Icon(Icons.refresh_rounded, size: 18, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(
+                l10n.refresh,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    if (!context.mounted) return;
+    if (result == 'libraries') {
+      showLibraryQuickVisibilityDialog(context);
+    } else if (result == 'switch_account') {
+      showUserMenu(context);
+    } else if (result == 'refresh') {
+      homeRefreshBus.request(newMediaBar: true);
+    }
   }
 }
 
@@ -1450,6 +1528,7 @@ class _SidebarItem extends StatefulWidget {
   final String label;
   final bool showLabel;
   final VoidCallback onPressed;
+  final VoidCallback? onSecondaryTap;
   final Widget? trailing;
   final FocusNode? focusNode;
   final Color? baseColor;
@@ -1464,6 +1543,7 @@ class _SidebarItem extends StatefulWidget {
     required this.label,
     required this.showLabel,
     required this.onPressed,
+    this.onSecondaryTap,
     this.trailing,
     this.focusNode,
     this.baseColor,
@@ -1550,6 +1630,7 @@ class _SidebarItemState extends State<_SidebarItem> {
           },
           child: GestureDetector(
             onTap: widget.onPressed,
+            onSecondaryTap: widget.onSecondaryTap,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
               height: desktopSidebar ? 44 : 40,
@@ -1615,6 +1696,7 @@ class _SidebarLibraryItem extends StatefulWidget {
   final String label;
   final bool showLabel;
   final VoidCallback onPressed;
+  final VoidCallback? onSecondaryTap;
   final Color? baseColor;
 
   const _SidebarLibraryItem({
@@ -1622,6 +1704,7 @@ class _SidebarLibraryItem extends StatefulWidget {
     required this.label,
     required this.showLabel,
     required this.onPressed,
+    this.onSecondaryTap,
     this.baseColor,
   });
 
@@ -1676,6 +1759,7 @@ class _SidebarLibraryItemState extends State<_SidebarLibraryItem> {
           },
           child: GestureDetector(
             onTap: widget.onPressed,
+            onSecondaryTap: widget.onSecondaryTap,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
               height: desktopSidebar ? 40 : 36,

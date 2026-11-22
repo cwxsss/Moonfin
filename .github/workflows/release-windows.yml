@@ -1,0 +1,85 @@
+name: Build & Release Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag Name (e.g. v3.1.2)'
+        required: false
+        default: 'v3.1.2'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.47.2'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Find the runner's vcpkg and image versions
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $commit = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg.outputs.commit }}-${{ steps.vcpkg.outputs.image }}
+          restore-keys: vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build installer
+        shell: pwsh
+        run: .\build-windows.ps1
+
+      - name: Verify Windows artifact
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem -Path . -Filter "Moonfin_Windows_v*.exe" -File -ErrorAction SilentlyContinue
+          if (-not $artifacts -or $artifacts.Count -eq 0) {
+            throw "Windows build did not produce Moonfin_Windows_v*.exe"
+          }
+          Write-Host "Found Windows artifact(s):"
+          $artifacts | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: Moonfin_Windows_v*.exe
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.2') }}
+          files: Moonfin_Windows_v*.exe
+          name: Moonfin Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.2') }}
+          body: |
+            ## Moonfin Windows Release (支持仿 Hills 右键管理媒体库显隐)
+            
+            ### ✨ 更新内容
+            - 增加类似 Hills 的侧边栏右键上下文菜单。
+            - 支持右键点击当前服务器/头像或侧边栏“媒体库”条目，快速弹出媒体库管理弹窗。
+            - 弹窗中支持点击眼睛图标一键切换媒体库显示/隐藏，实时同步生效。
+            - 支持【恢复默认】一键恢复全部显示。
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
