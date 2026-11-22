@@ -1041,8 +1041,13 @@ class UserPreferences extends ChangeNotifier {
 
   int resolveMaxAudioChannels() => get(maxAudioChannels);
 
-  Duration resolveControlsHideDelay() =>
-      Duration(milliseconds: get(controlsHideDelay));
+  Duration resolveControlsHideDelay() {
+    final ms = get(controlsHideDelay);
+    if (ms == 5000) {
+      return const Duration(milliseconds: 3000);
+    }
+    return Duration(milliseconds: ms);
+  }
 
   PosterSize resolveLibraryPosterSize() {
     if (containsPreference(libraryPosterSize, scopedOnly: true)) {
@@ -3091,7 +3096,7 @@ class UserPreferences extends ChangeNotifier {
 
   static final controlsHideDelay = Preference(
     key: 'controlsHideDelay',
-    defaultValue: 5000,
+    defaultValue: 3000,
   );
 
   /// How much the player controls dim while HDR plays, in percent.

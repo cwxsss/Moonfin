@@ -54,10 +54,10 @@ import 'offline_aware_image.dart';
 import 'adaptive/sf_symbol.dart';
 import 'user_avatar_image.dart';
 
-const _kExpandedWidthDesktop = 240.0;
+const _kExpandedWidthDesktop = 186.0;
 const _kExpandedWidthMobile = 260.0;
 const _kExpandDuration = Duration(milliseconds: 200);
-const _kExpandedWidthTV = 280.0;
+const _kExpandedWidthTV = 186.0;
 const _kCollapsedWidthTV = 72.0;
 const _kExpandedBackdropWidthTV = _kExpandedWidthTV - 16.0;
 const _kBackdropEdgeBlendWidthTV =
@@ -68,6 +68,11 @@ class LeftSidebar extends StatefulWidget {
   /// point circle and the 8 around it.
   static const double mobileMenuExtent = 56;
 
+  /// Width constants for external layout pushing
+  static const double expandedWidth = _kExpandedWidthTV;
+  static const double collapsedWidth = _kCollapsedWidthTV;
+  static const double pushOffset = _kExpandedWidthTV - _kCollapsedWidthTV;
+
   final String? activeRoute;
   final FocusNode? contentFocusNode;
   final bool showBackButton;
@@ -76,6 +81,9 @@ class LeftSidebar extends StatefulWidget {
   /// Use this instead of walking the element tree to determine if the
   /// current focus is within the sidebar; it's resilient during teardown.
   static final ValueNotifier<bool> isFocusedNotifier = ValueNotifier<bool>(false);
+
+  /// Notifier updated when the sidebar expands or collapses.
+  static final ValueNotifier<bool> isExpandedNotifier = ValueNotifier<bool>(false);
 
   const LeftSidebar({
     super.key,
@@ -273,6 +281,9 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
     if (_sidebarHadFocus) {
       LeftSidebar.isFocusedNotifier.value = false;
     }
+    if (_isExpanded) {
+      LeftSidebar.isExpandedNotifier.value = false;
+    }
     super.dispose();
   }
 
@@ -386,6 +397,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
   void _expand() {
     if (_isExpanded) return;
     setState(() => _isExpanded = true);
+    LeftSidebar.isExpandedNotifier.value = true;
     _labelTimer?.cancel();
     final delay = PlatformDetection.isTV
         ? const Duration(milliseconds: 150)
@@ -403,6 +415,7 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
       _showLabels = false;
       _librariesExpanded = false;
     });
+    LeftSidebar.isExpandedNotifier.value = false;
   }
 
   void _toggle() {
