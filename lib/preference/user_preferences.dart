@@ -2197,6 +2197,12 @@ class UserPreferences extends ChangeNotifier {
     defaultValue: false,
   );
 
+  /// Whether the desktop left sidebar expands automatically on mouse hover.
+  static final autoExpandSidebarOnHover = Preference(
+    key: 'pref_auto_expand_sidebar_on_hover',
+    defaultValue: false,
+  );
+
   /// Lists the book library's titles in rows instead of a cover grid.
   static final bookLibraryListView = Preference(
     key: 'pref_book_library_list_view',

@@ -869,7 +869,8 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
       ),
     );
 
-    if (!desktopHoverRail) return rail;
+    final autoExpand = _prefs.get(UserPreferences.autoExpandSidebarOnHover);
+    if (!desktopHoverRail || !autoExpand) return rail;
 
     return MouseRegion(
       onEnter: (_) => _expand(),
@@ -974,13 +975,16 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
         clockBehavior == ClockBehavior.inMenus;
     return Column(
       children: [
-        Visibility(
-          visible: _isExpanded,
-          maintainSize: true,
-          maintainAnimation: true,
-          maintainState: true,
-          child: _buildUserSection(),
-        ),
+        _isExpanded
+            ? _buildUserSection()
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(0, 16, 0, 8),
+                child: IconButton(
+                  icon: const Icon(Icons.menu_rounded, color: Colors.white70, size: 24),
+                  tooltip: '展开导航栏',
+                  onPressed: _expand,
+                ),
+              ),
         Expanded(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -1431,6 +1435,14 @@ class _LeftSidebarState extends State<LeftSidebar> with RouteAware {
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.menu_open_rounded, color: Colors.white54, size: 20),
+              tooltip: '收起导航栏',
+              splashRadius: 16,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              onPressed: _collapse,
             ),
           ],
         ],

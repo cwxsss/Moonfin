@@ -65,16 +65,24 @@ class _LibraryQuickVisibilityDialogState
     final config = _config;
     if (config == null) return;
 
-    final excludes = List<String>.from(config.myMediaExcludes);
-    final isHidden = excludes.contains(libraryId);
+    final myExcludes = List<String>.from(config.myMediaExcludes);
+    final latestExcludes = List<String>.from(config.latestItemsExcludes);
+    final isHidden = myExcludes.contains(libraryId);
 
     if (isHidden) {
-      excludes.remove(libraryId);
+      myExcludes.remove(libraryId);
+      latestExcludes.remove(libraryId);
     } else {
-      excludes.add(libraryId);
+      myExcludes.add(libraryId);
+      if (!latestExcludes.contains(libraryId)) {
+        latestExcludes.add(libraryId);
+      }
     }
 
-    final updated = config.copyWith(myMediaExcludes: excludes);
+    final updated = config.copyWith(
+      myMediaExcludes: myExcludes,
+      latestItemsExcludes: latestExcludes,
+    );
     setState(() => _config = updated);
 
     try {
