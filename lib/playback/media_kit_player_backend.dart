@@ -757,12 +757,25 @@ class MediaKitPlayerBackend extends PlayerBackend
           : _mpvAudioChannelsLayout(maxChannels);
       _nativeSetProperty(platform, 'audio-channels', audioChannelsLayout);
 
+      // Increase audio buffer to 0.5s (mpv defaults to 0.2s) to prevent buffer
+      // underrun crackling / popping / static noise during UI rendering and system scheduling jitter.
+      _nativeSetProperty(platform, 'audio-buffer', '0.5');
+      // Scaletempo2 provides pitch preservation without comb-filtering or crackling during speed & sync adjustments.
+      _nativeSetProperty(platform, 'audio-pitch-correction', 'yes');
+      _nativeSetProperty(platform, 'af', 'scaletempo2');
+      // High-precision audio resampling parameters to avoid interpolation distortion between sample rates.
+      _nativeSetProperty(platform, 'audio-resample-filter-size', '32');
+      _nativeSetProperty(platform, 'audio-resample-cutoff', '0.999');
+      _nativeSetProperty(platform, 'audio-resample-linear', 'yes');
+      _nativeSetProperty(platform, 'audio-fallback-to-null', 'no');
+
       if (PlatformDetection.isAndroid && PlatformDetection.isTV) {
-        // Prefer AudioTrack + preloaded scaletempo2 for stable TV speed changes.
+        // Prefer AudioTrack for stable TV speed changes.
         _nativeSetProperty(platform, 'ao', 'audiotrack');
-        _nativeSetProperty(platform, 'af', 'scaletempo2');
         _nativeSetProperty(platform, 'audio-normalize-downmix', 'no');
-        _nativeSetProperty(platform, 'audio-fallback-to-null', 'no');
+      } else {
+        // Normalize multi-channel audio downmixing to stereo to avoid digital clipping / distortion.
+        _nativeSetProperty(platform, 'audio-normalize-downmix', 'yes');
       }
       if (PlatformDetection.isIOS || PlatformDetection.isAndroid) {
         _nativeSetProperty(platform, 'tone-mapping', 'auto');
@@ -2453,6 +2466,12 @@ class MediaKitPlayerBackend extends PlayerBackend
     'audio-spdif',
     'audio-channels',
     'audio-normalize-downmix',
+    'audio-buffer',
+    'audio-pitch-correction',
+    'audio-resample-filter-size',
+    'audio-resample-cutoff',
+    'audio-resample-linear',
+    'audio-fallback-to-null',
     'volume-gain',
     'volume-max',
     'replaygain',

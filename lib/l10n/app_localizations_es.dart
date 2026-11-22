@@ -10,7 +10,7 @@ class AppLocalizationsEs extends AppLocalizations {
   AppLocalizationsEs([String locale = 'es']) : super(locale);
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller =>
@@ -18514,7 +18514,7 @@ class AppLocalizationsEs419 extends AppLocalizationsEs {
   AppLocalizationsEs419() : super('es_419');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerPending => 'Pendiente';
@@ -26424,7 +26424,7 @@ class AppLocalizationsEsAr extends AppLocalizationsEs {
   AppLocalizationsEsAr() : super('es_AR');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller => 'Relleno';
@@ -41929,7 +41929,7 @@ class AppLocalizationsEsMx extends AppLocalizationsEs {
   AppLocalizationsEsMx() : super('es_MX');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerPending => 'Pendiente';

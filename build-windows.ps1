@@ -1,4 +1,4 @@
-param(
+﻿param(
   # Target architecture. 'x64' keeps the original behavior byte-identical;
   # 'arm64' builds the native ARM64 installer on a windows-11-arm runner.
   [ValidateSet('x64', 'arm64')]
@@ -301,9 +301,9 @@ function New-InnoScript {
   }
 
   $iss = @"
-#define MyAppName "Moonfin"
+#define MyAppName "小褚播放器"
 #define MyAppVersion "$AppVersion"
-#define MyAppPublisher "Moonfin"
+#define MyAppPublisher "xcplay"
 #define MyAppExeName "moonfin.exe"
 
 [Setup]
@@ -311,7 +311,7 @@ AppId={{2B684544-2B56-47BE-B52F-6F7A94BCA4E1}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Moonfin
+DefaultDirName={autopf}\xcplay
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=$OutputDir
@@ -359,13 +359,13 @@ $appVersion = Get-AppVersion
 # x64 keeps the original "Moonfin_Windows_v<version>" name; arm64 follows the same
 # scheme with a "WindowsARM64" platform token.
 if ($Architecture -eq 'arm64') {
-  $installerBaseName = "Moonfin_WindowsARM64_v$appVersion"
+  $installerBaseName = "xcplay_WindowsARM64_v$appVersion"
 } else {
-  $installerBaseName = "Moonfin_Windows_v$appVersion"
+  $installerBaseName = "xcplay_Windows_v$appVersion"
 }
-# Named outside Moonfin_* so the release job doesn't attach it, since an
+# Named outside xcplay_* so the release job doesn't attach it, since an
 # unsigned MSIX only installs through the Store.
-$storePackageBaseName = $installerBaseName -replace '^Moonfin_', 'MoonfinStore_'
+$storePackageBaseName = $installerBaseName -replace '^xcplay_', 'xcplayStore_'
 $distributionChannel = if ($Store) { 'msstore' } else { 'windows' }
 
 Push-Location $repoRoot

@@ -10,7 +10,7 @@ class AppLocalizationsYue extends AppLocalizations {
   AppLocalizationsYue([String locale = 'yue']) : super(locale);
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller => 'Filler';
@@ -18000,7 +18000,7 @@ class AppLocalizationsYueCn extends AppLocalizationsYue {
   AppLocalizationsYueCn() : super('yue_CN');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerPending => '待办的';
@@ -25405,7 +25405,7 @@ class AppLocalizationsYueHk extends AppLocalizationsYue {
   AppLocalizationsYueHk() : super('yue_HK');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerPending => '待辦的';

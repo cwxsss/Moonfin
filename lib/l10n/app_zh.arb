@@ -1,6 +1,6 @@
 {
     "@@locale": "zh",
-    "appTitle": "Moonfin",
+    "appTitle": "小褚播放器",
     "@appTitle": {
         "description": "The application title"
     },
@@ -82,7 +82,7 @@
     "@selectServer": {
         "description": "Button to navigate back to server selection"
     },
-    "appVersionFooter": "Moonfin 版本 {version}",
+    "appVersionFooter": "小褚播放器 版本 {version}",
     "@appVersionFooter": {
         "description": "App version shown in footer",
         "placeholders": {
@@ -156,7 +156,7 @@
     "@secureStorageUnavailable": {
         "description": "Dialog title when system keyring is inaccessible"
     },
-    "secureStorageUnavailableMessage": "Moonfin 无法访问系统密钥环。仍可继续登录，但在密钥环解锁前，安全令牌存储可能不可用。",
+    "secureStorageUnavailableMessage": "小褚播放器 无法访问系统密钥环。仍可继续登录，但在密钥环解锁前，安全令牌存储可能不可用。",
     "@secureStorageUnavailableMessage": {
         "description": "Explanation when secure storage is not available"
     },
@@ -249,7 +249,7 @@
             }
         }
     },
-    "exitApp": "退出 Moonfin？",
+    "exitApp": "退出小褚播放器？",
     "@exitApp": {
         "description": "Title of exit confirmation dialog"
     },
@@ -3307,7 +3307,7 @@
     "@saveToDownloadsFolder": {
         "description": "Setting for saving to downloads folder"
     },
-    "downloadsVisibleToOtherApps": "Downloads/Moonfin — 对其他应用可见",
+    "downloadsVisibleToOtherApps": "Downloads/xcplay — 对其他应用可见",
     "@downloadsVisibleToOtherApps": {
         "description": "Description for downloads folder visibility"
     },
@@ -3343,7 +3343,7 @@
     "@saveToDownloadsFolderQuestion": {
         "description": "Dialog title for saving to downloads folder"
     },
-    "saveToDownloadsFolderDescription": "下载的媒体将保存到你的设备上的 Downloads/Moonfin 中。这些文件将对其他应用可见，例如你的图库或音乐播放器。\n\n现有下载将保留在当前位置。",
+    "saveToDownloadsFolderDescription": "下载的媒体将保存到你的设备上的 Downloads/xcplay 中。这些文件将对其他应用可见，例如你的图库或音乐播放器。\n\n现有下载将保留在当前位置。",
     "@saveToDownloadsFolderDescription": {
         "description": "Description for saving to downloads folder"
     },
@@ -3475,7 +3475,7 @@
     "@libraryVisibility": {
         "description": "Section title for library visibility"
     },
-    "libraryVisibilityDescription": "切换每个媒体库的主页可见性。重启 Moonfin 以使更改生效。",
+    "libraryVisibilityDescription": "切换每个媒体库的主页可见性。重启小褚播放器以使更改生效。",
     "@libraryVisibilityDescription": {
         "description": "Explanation shown on the library visibility settings screen"
     },
@@ -4252,7 +4252,7 @@
     "@cancelRequest": {
         "description": "Button/dialog title to cancel a media request"
     },
-    "playInMoonfin": "在 Moonfin 中播放",
+    "playInMoonfin": "在小褚播放器中播放",
     "@playInMoonfin": {
         "description": "Button to play available media in Moonfin"
     },
@@ -4306,7 +4306,7 @@
     "@keep": {
         "description": "Button to keep/dismiss a cancel dialog"
     },
-    "itemNotFoundInLibrary": "在你的 Moonfin 媒体库中未找到此媒体项",
+    "itemNotFoundInLibrary": "在你的小褚播放器媒体库中未找到此媒体项",
     "@itemNotFoundInLibrary": {
         "description": "Snackbar when Seerr item cannot be found in Jellyfin"
     },
@@ -4610,7 +4610,7 @@
         }
     },
     "adminServerRebootInProgress": "服务器正在重启",
-    "adminServerRebootMessage": "服务器正在重启，请重启 Moonfin",
+    "adminServerRebootMessage": "服务器正在重启，请重启小褚播放器",
     "adminActiveSessions": "活跃会话",
     "adminSessionsLoadFailed": "无法加载会话",
     "adminNoActiveSessions": "暂无活跃会话",
@@ -6498,7 +6498,7 @@
     "settingsShowGenresButtonInNavigation": "在导航栏中显示类型按钮",
     "settingsShowFavoritesButtonInNavigation": "在导航栏中显示收藏按钮",
     "settingsShowLibrariesButtonInNavigation": "在导航栏中显示媒体库按钮",
-    "settingsLibraryVisibilitySubtitle": "切换每个媒体库的主页可见性。重启 Moonfin 以使更改生效。",
+    "settingsLibraryVisibilitySubtitle": "切换每个媒体库的主页可见性。重启小褚播放器以使更改生效。",
     "settingsMediaBarAndLocalPreviews": "媒体栏和本地预览",
     "settingsVisualOverlays": "视觉叠加",
     "settingsSeasonalSurprise": "季节性惊喜",
@@ -6517,14 +6517,14 @@
     "settingsJoinDiscord": "加入 Discord",
     "settingsJoinDiscordSubtitle": "与社区聊天",
     "settingsJoinTheDiscord": "加入 Discord",
-    "settingsSupportMoonfin": "支持 Moonfin",
+    "settingsSupportMoonfin": "支持小褚播放器",
     "settingsLegal": "法律信息",
     "settingsLicenses": "许可证",
     "settingsOpenSourceLicenseNotices": "开源许可声明",
     "settingsPrivacyPolicy": "隐私政策",
-    "settingsPrivacyPolicySubtitle": "Moonfin 如何处理你的数据",
+    "settingsPrivacyPolicySubtitle": "小褚播放器 如何处理你的数据",
     "settingsCheckForUpdates": "检查更新",
-    "settingsCheckForUpdatesSubtitle": "检查最新的 Moonfin 版本",
+    "settingsCheckForUpdatesSubtitle": "检查最新的小褚播放器版本",
     "settingsPoweredByFlutter": "由 Flutter 提供支持",
     "settingsLicenseNoticesCount": "{count, plural, one {# 条许可证声明} other {# 条许可证声明}}",
     "@settingsLicenseNoticesCount": {
@@ -7057,12 +7057,12 @@
     "preferSdhSubtitles": "优先使用 SDH 字幕",
     "preferSdhSubtitlesSubtitle": "自动选择时优先选择 SDH/CC 字幕轨道。",
     "webDiagnostics": "Web 诊断",
-    "webDiagnosticsTitle": "Moonfin Web 诊断",
+    "webDiagnosticsTitle": "小褚播放器 Web 诊断",
     "webDiagnosticsIntro": "使用此页面可以诊断浏览器连接问题（CORS、混合内容和发现设置）。",
     "webDiagnosticsDetectedMixedContentFailure": "检测到混合内容失败",
     "webDiagnosticsDetectedCorsPreflightFailure": "检测到 CORS/预检失败",
-    "webDiagnosticsMixedContentFailureBody": "Moonfin 检测到一个 HTTPS 页面试图调用 HTTP 服务器 URL。浏览器会在请求到达你的服务器之前阻止该请求。",
-    "webDiagnosticsCorsFailureBody": "Moonfin 检测到浏览器请求失败，常见原因是媒体服务器缺少 CORS 或预检请求标头。",
+    "webDiagnosticsMixedContentFailureBody": "小褚播放器 检测到一个 HTTPS 页面试图调用 HTTP 服务器 URL。浏览器会在请求到达你的服务器之前阻止该请求。",
+    "webDiagnosticsCorsFailureBody": "小褚播放器 检测到浏览器请求失败，常见原因是媒体服务器缺少 CORS 或预检请求标头。",
     "webDiagnosticsTargetUrl": "目标 URL：{url}",
     "@webDiagnosticsTargetUrl": {
         "description": "Target URL shown in diagnostics summary",
@@ -7092,7 +7092,7 @@
     "notConfigured": "未配置",
     "webDiagnosticsMixedContent": "混合内容",
     "webDiagnosticsMixedContentDetected": "此页面通过 HTTPS 加载，但有一个或多个配置的 URL 使用 HTTP。浏览器会阻止 HTTPS 页面调用 HTTP API。",
-    "webDiagnosticsMixedContentFix": "修复：通过 HTTPS 为你的媒体服务器或代理端点提供服务，或仅在受信任的本地网络上通过 HTTP 加载 Moonfin。",
+    "webDiagnosticsMixedContentFix": "修复：通过 HTTPS 为你的媒体服务器或代理端点提供服务，或仅在受信任的本地网络上通过 HTTP 加载 小褚播放器。",
     "webDiagnosticsNoMixedContentDetected": "从当前运行时设置中未检测到明显的混合内容配置。",
     "webDiagnosticsCorsChecklist": "CORS 清单",
     "webDiagnosticsCorsChecklistItem1": "• 在 Access-Control-Allow-Origin 中允许浏览器来源。",
@@ -7619,7 +7619,7 @@
     "transcodeAudioChannelsNotSupported": "音频声道数不受支持。",
     "sortAlphabetical": "字母顺序",
     "sortReleaseDescending": "发行顺序（降序）",
-    "impellerRestartMessage": "Moonfin 需要重启以更改渲染引擎。立即关闭应用，然后重新打开以应用更改。",
+    "impellerRestartMessage": "小褚播放器 需要重启以更改渲染引擎。立即关闭应用，然后重新打开以应用更改。",
     "@impellerRestartMessage": {
         "description": "Body of the dialog shown after changing the rendering engine."
     },
@@ -8160,7 +8160,7 @@
     "@shuffleAllMusic": {
         "description": "Car browse action that shuffles the whole music library"
     },
-    "carSignInPrompt": "在手机上登录 Moonfin",
+    "carSignInPrompt": "在手机上登录 小褚播放器",
     "@carSignInPrompt": {
         "description": "Shown in the car when no account is signed in"
     },
@@ -11750,7 +11750,7 @@
     "@shortcutToggleFullscreen": {
         "description": "F11 and Alt+Enter anywhere, F in the player"
     },
-    "shortcutQuit": "退出 Moonfin",
+    "shortcutQuit": "退出小褚播放器",
     "@shortcutQuit": {
         "description": "What Ctrl+Q does on desktop"
     },
@@ -11886,7 +11886,7 @@
     "@bookReadingUnavailableTitle": {
         "description": "Title of the dialog shown on Apple TV when the user tries to open a book or comic, which tvOS has no reader for"
     },
-    "bookReadingUnavailableMessage": "请在手机、平板电脑或电脑上的 Moonfin 中打开阅读。有声读物仍可在此播放。",
+    "bookReadingUnavailableMessage": "请在手机、平板电脑或电脑上的 小褚播放器 中打开阅读。有声读物仍可在此播放。",
     "@bookReadingUnavailableMessage": {
         "description": "Body of the dialog shown on Apple TV when the user tries to open a book or comic"
     },
@@ -14376,7 +14376,7 @@
     "@watchPartyRoomsEmpty": {
         "description": "Empty room list on the Watch Parties screen"
     },
-    "watchPartyPasteHint": "也可以在此粘贴邀请链接。在手机上，该链接会直接在 Moonfin 中打开并进入派对。",
+    "watchPartyPasteHint": "也可以在此粘贴邀请链接。在手机上，该链接会直接在 小褚播放器 中打开并进入派对。",
     "@watchPartyPasteHint": {
         "description": "Hint under the room code field on the Watch Parties screen"
     },
@@ -14442,7 +14442,7 @@
     "@watchPartyYours": {
         "description": "Title of the lobby and party controls"
     },
-    "watchPartyInviteHint": "将其粘贴到任意聊天中即可。它会打开此服务器上的一个页面，其中带有“在 Moonfin 中打开”按钮。",
+    "watchPartyInviteHint": "将其粘贴到任意聊天中即可。它会打开此服务器上的一个页面，其中带有“在 小褚播放器 中打开”按钮。",
     "@watchPartyInviteHint": {
         "description": "Hint under Copy invite link in the lobby"
     },
@@ -16095,7 +16095,7 @@
     "@smartDownloadsEnable": {
         "description": "Switch that swaps a watched downloaded episode for the next episodes of the series"
     },
-    "smartDownloadsEnableDescription": "当你在任意设备上观看完一集后，Moonfin 会自动下载后续剧集。已下载的剧集在观看后会被删除。",
+    "smartDownloadsEnableDescription": "当你在任意设备上观看完一集后，小褚播放器 会自动下载后续剧集。已下载的剧集在观看后会被删除。",
     "@smartDownloadsEnableDescription": {
         "description": "Explains the smart downloads switch, including that watched episodes are deleted"
     },
@@ -16225,7 +16225,7 @@
     "@topShelf": {
         "description": "Apple TV settings label for what the tvOS home screen shows above the Moonfin icon. Top Shelf is Apple's name for that area"
     },
-    "topShelfDescription": "选中 Moonfin 图标时，Apple TV 主屏幕上方显示的内容。此设置仅在本设备上生效。",
+    "topShelfDescription": "选中 小褚播放器 图标时，Apple TV 主屏幕上方显示的内容。此设置仅在本设备上生效。",
     "@topShelfDescription": {
         "description": "Apple TV settings subtitle for the Top Shelf option"
     },
@@ -18615,11 +18615,11 @@
     "@remoteMediaNotificationSubtitle": {
         "description": "Subtitle for the remote playback notification toggle in General settings on Android mobile"
     },
-    "remoteActivityWatching": "正在 Moonfin 上观看",
+    "remoteActivityWatching": "正在小褚播放器上观看",
     "@remoteActivityWatching": {
         "description": "Line in the Android media notification that mirrors a video another device on the same account is playing. Moonfin is the app name"
     },
-    "remoteActivityListening": "正在 Moonfin 上收听",
+    "remoteActivityListening": "正在小褚播放器上收听",
     "@remoteActivityListening": {
         "description": "Line in the Android media notification that mirrors music or an audiobook another device on the same account is playing. Moonfin is the app name"
     },

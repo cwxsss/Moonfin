@@ -10,7 +10,7 @@ class AppLocalizationsHu extends AppLocalizations {
   AppLocalizationsHu([String locale = 'hu']) : super(locale);
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller => 'Filler';

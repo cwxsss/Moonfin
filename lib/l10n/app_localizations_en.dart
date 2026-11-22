@@ -10,7 +10,7 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller => 'Filler';
@@ -177,7 +177,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String appVersionFooter(String version) {
-    return 'Moonfin version $version';
+    return 'xcplay version $version';
   }
 
   @override
@@ -229,7 +229,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get secureStorageUnavailableMessage =>
-      'Moonfin could not access your system keyring. Login can continue, but secure token storage may be unavailable until the keyring is unlocked.';
+      'xcplay could not access your system keyring. Login can continue, but secure token storage may be unavailable until the keyring is unlocked.';
 
   @override
   String get ok => 'OK';
@@ -545,7 +545,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get interfaceLayoutSubtitle =>
-      'Override the detected layout when this device is read wrong. Restart Moonfin for changes to take effect.';
+      'Override the detected layout when this device is read wrong. Restart xcplay for changes to take effect.';
 
   @override
   String get interfaceLayoutAutomatic => 'Automatic';
@@ -771,7 +771,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get exitApp => 'Exit Moonfin?';
+  String get exitApp => 'Exit xcplay?';
 
   @override
   String get exitAppConfirmation => 'Are you sure you want to exit?';
@@ -2238,7 +2238,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get shortcutToggleFullscreen => 'Fullscreen on or off';
 
   @override
-  String get shortcutQuit => 'Quit Moonfin';
+  String get shortcutQuit => 'Quit xcplay';
 
   @override
   String get shortcutPlayPause => 'Play or pause';
@@ -4673,7 +4673,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get downloadsVisibleToOtherApps =>
-      'Downloads/Moonfin — visible to other apps';
+      'Downloads/xcplay — visible to other apps';
 
   @override
   String get dangerZone => 'Danger Zone';
@@ -4703,7 +4703,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get saveToDownloadsFolderDescription =>
-      'Downloaded media will be saved to Downloads/Moonfin on your device. These files will be visible to other apps such as your gallery or music player.\n\nExisting downloads will remain in their current location.';
+      'Downloaded media will be saved to Downloads/xcplay on your device. These files will be visible to other apps such as your gallery or music player.\n\nExisting downloads will remain in their current location.';
 
   @override
   String get transcodingTimeRemainingUnavailable =>
@@ -4988,7 +4988,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get libraryVisibilityDescription =>
-      'Toggle home page visibility per library. Restart Moonfin for changes to take effect.';
+      'Toggle home page visibility per library. Restart xcplay for changes to take effect.';
 
   @override
   String get showInNavigation => 'Show in navigation';
@@ -6087,7 +6087,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get cancelRequest4k => 'Cancel 4K Request';
 
   @override
-  String get playInMoonfin => 'Play in Moonfin';
+  String get playInMoonfin => 'Play in xcplay';
 
   @override
   String get requestedByLabel => 'Requested by';
@@ -6132,7 +6132,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get keep => 'Keep';
 
   @override
-  String get itemNotFoundInLibrary => 'Item not found in your Moonfin library';
+  String get itemNotFoundInLibrary => 'Item not found in your xcplay library';
 
   @override
   String get errorSearchingLibrary => 'Error searching library';
@@ -11911,7 +11911,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLibraryVisibilitySubtitle =>
-      'Toggle home page visibility per library. Restart Moonfin for changes to take effect.';
+      'Toggle home page visibility per library. Restart xcplay for changes to take effect.';
 
   @override
   String get settingsMediaBarAndLocalPreviews => 'Media Bar & Local Previews';
@@ -12031,7 +12031,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsJoinTheDiscord => 'Join the Discord';
 
   @override
-  String get settingsSupportMoonfin => 'Support Moonfin';
+  String get settingsSupportMoonfin => 'Support xcplay';
 
   @override
   String get settingsSupportMoonfinSubtitle =>
@@ -12050,7 +12050,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsPrivacyPolicy => 'Privacy Policy';
 
   @override
-  String get settingsPrivacyPolicySubtitle => 'How Moonfin handles your data';
+  String get settingsPrivacyPolicySubtitle => 'How xcplay handles your data';
 
   @override
   String get settingsCheckForUpdates => 'Check for Updates';
@@ -18258,10 +18258,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Show system media controls when watching on another device';
 
   @override
-  String get remoteActivityWatching => 'Watching on Moonfin';
+  String get remoteActivityWatching => 'Watching on xcplay';
 
   @override
-  String get remoteActivityListening => 'Listening on Moonfin';
+  String get remoteActivityListening => 'Listening on xcplay';
 
   @override
   String get clickpadSeeking => 'Allow Clickpad Seeking';
@@ -18282,7 +18282,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   AppLocalizationsEnGb() : super('en_GB');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => 'xcplay';
 
   @override
   String get animeMarkerFiller => 'Filler';
@@ -18380,7 +18380,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String appVersionFooter(String version) {
-    return 'Moonfin version $version';
+    return 'xcplay version $version';
   }
 
   @override
@@ -18432,7 +18432,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get secureStorageUnavailableMessage =>
-      'Moonfin could not access your system keyring. Login can continue, but secure token storage may be unavailable until the keyring is unlocked.';
+      'xcplay could not access your system keyring. Login can continue, but secure token storage may be unavailable until the keyring is unlocked.';
 
   @override
   String get ok => 'OK';
@@ -18725,7 +18725,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get interfaceLayoutSubtitle =>
-      'Override the detected layout when this device is read wrong. Restart Moonfin for changes to take effect.';
+      'Override the detected layout when this device is read wrong. Restart xcplay for changes to take effect.';
 
   @override
   String get interfaceLayoutAutomatic => 'Automatic';
@@ -18897,7 +18897,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   }
 
   @override
-  String get exitApp => 'Exit Moonfin?';
+  String get exitApp => 'Exit xcplay?';
 
   @override
   String get exitAppConfirmation => 'Are you sure you want to exit?';
@@ -20294,7 +20294,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   String get shortcutToggleFullscreen => 'Fullscreen on or off';
 
   @override
-  String get shortcutQuit => 'Quit Moonfin';
+  String get shortcutQuit => 'Quit xcplay';
 
   @override
   String get shortcutPlayPause => 'Play or pause';
@@ -22273,7 +22273,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get downloadsVisibleToOtherApps =>
-      'Downloads/Moonfin — visible to other apps';
+      'Downloads/xcplay — visible to other apps';
 
   @override
   String get dangerZone => 'Danger Zone';
@@ -22303,7 +22303,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get saveToDownloadsFolderDescription =>
-      'Downloaded media will be saved to Downloads/Moonfin on your device. These files will be visible to other apps such as your gallery or music player.\n\nExisting downloads will remain in their current location.';
+      'Downloaded media will be saved to Downloads/xcplay on your device. These files will be visible to other apps such as your gallery or music player.\n\nExisting downloads will remain in their current location.';
 
   @override
   String get transcodingTimeRemainingUnavailable =>
@@ -22461,7 +22461,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get libraryVisibilityDescription =>
-      'Toggle home page visibility per library. Restart Moonfin for changes to take effect.';
+      'Toggle home page visibility per library. Restart xcplay for changes to take effect.';
 
   @override
   String get showInNavigation => 'Show in navigation';
@@ -23260,7 +23260,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   String get cancelRequest4k => 'Cancel 4K Request';
 
   @override
-  String get playInMoonfin => 'Play in Moonfin';
+  String get playInMoonfin => 'Play in xcplay';
 
   @override
   String get requestedByLabel => 'Requested by';
@@ -23305,7 +23305,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   String get keep => 'Keep';
 
   @override
-  String get itemNotFoundInLibrary => 'Item not found in your Moonfin library';
+  String get itemNotFoundInLibrary => 'Item not found in your xcplay library';
 
   @override
   String get errorSearchingLibrary => 'Error searching library';
@@ -27541,7 +27541,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
 
   @override
   String get settingsLibraryVisibilitySubtitle =>
-      'Toggle home page visibility per library. Restart Moonfin for changes to take effect.';
+      'Toggle home page visibility per library. Restart xcplay for changes to take effect.';
 
   @override
   String get settingsMediaBarAndLocalPreviews => 'Media Bar & Local Previews';
@@ -27661,7 +27661,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   String get settingsJoinTheDiscord => 'Join the Discord';
 
   @override
-  String get settingsSupportMoonfin => 'Support Moonfin';
+  String get settingsSupportMoonfin => 'Support xcplay';
 
   @override
   String get settingsSupportMoonfinSubtitle =>
@@ -27680,7 +27680,7 @@ class AppLocalizationsEnGb extends AppLocalizationsEn {
   String get settingsPrivacyPolicy => 'Privacy Policy';
 
   @override
-  String get settingsPrivacyPolicySubtitle => 'How Moonfin handles your data';
+  String get settingsPrivacyPolicySubtitle => 'How xcplay handles your data';
 
   @override
   String get settingsCheckForUpdates => 'Check for Updates';

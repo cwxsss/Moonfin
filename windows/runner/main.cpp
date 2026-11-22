@@ -33,7 +33,7 @@ void RegisterMoonfinScheme() {
                        nullptr) != ERROR_SUCCESS) {
     return;
   }
-  const wchar_t description[] = L"URL:Moonfin";
+  const wchar_t description[] = L"URL:xcplay";
   ::RegSetValueEx(scheme_key, nullptr, 0, REG_SZ,
                   reinterpret_cast<const BYTE *>(description),
                   sizeof(description));
@@ -90,7 +90,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"Moonfin", origin, size)) {
+  if (!window.Create(L"小褚播放器", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

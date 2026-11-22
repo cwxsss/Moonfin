@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag Name (e.g. v3.1.2)'
+        description: 'Release Tag Name (e.g. v3.1.7)'
         required: false
-        default: 'v3.1.2'
+        default: 'v3.1.7'
 
 permissions:
   contents: write
@@ -52,9 +52,9 @@ jobs:
       - name: Verify Windows artifact
         shell: pwsh
         run: |
-          $artifacts = Get-ChildItem -Path . -Filter "Moonfin_Windows_v*.exe" -File -ErrorAction SilentlyContinue
+          $artifacts = Get-ChildItem -Path . -Filter "*Windows*_v*.exe" -File -ErrorAction SilentlyContinue
           if (-not $artifacts -or $artifacts.Count -eq 0) {
-            throw "Windows build did not produce Moonfin_Windows_v*.exe"
+            throw "Windows build did not produce *Windows*_v*.exe"
           }
           Write-Host "Found Windows artifact(s):"
           $artifacts | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -63,26 +63,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: Moonfin_Windows_v*.exe
+          path: "*Windows*_v*.exe"
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.2') }}
-          files: Moonfin_Windows_v*.exe
-          name: Moonfin Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.2') }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.7') }}
+          files: "*Windows*_v*.exe"
+          name: 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.7') }}
           body: |
-            ## Moonfin Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.6') }}
+            ## 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.7') }}
             
             ### ✨ 更新内容
-            - **导航栏防误展**：桌面端点击音频、字幕、更多等弹窗关闭后，焦点恢复不再触发左侧侧边栏自动展开。
-            - **导航栏智能收起**：展开侧边栏后，鼠标移出导航栏区域自动收起。
-            - **媒体库标题补全**：修复聚合栏折叠显示时文字溢出被截断问题，完整显示“媒体库”标题。
-            - **全局中文字体统一**：统一引入微软雅黑 (Microsoft YaHei)、苹方 (PingFang SC)、思源黑体 (Source Han Sans SC) 回退栈，彻底解决设置与按钮字体粗细高低不一致问题。
-            - **媒体库显隐即时生效**：媒体库显隐修改关闭后自动强制刷新并清除已隐藏库数据。
-            - **播放器控制栏优化**：播放/暂停/快进快退按键进一步下移贴近进度条上方，观影遮挡更少。
-            - **侧边栏悬浮提示**：侧边栏收起状态下，鼠标悬停于图标上即显示文字气泡（首页、搜索、观影派对、媒体库、设置等）。
-            - **配置导入与导出**：常规设置中新增“备份与还原”模块，支持完整导出 JSON 配置到剪贴板或文件，以及一键导入恢复配置。
+            - **软件重命名**：软件名称正式变更为「小褚播放器」（英文：xcplay），全面更新多语言本地化、应用窗口标题、安装器及安装路径。
+            - **音频播放爆音/杂音彻底修复**：
+              - 调大 mpv 音频缓冲至 500ms（`audio-buffer=0.5`），彻底消除 WASAPI 在 UI 渲染高负载下的 Buffer Underrun 断流撕裂杂音；
+              - 开启多声道立体声下混防削波归一化（`audio-normalize-downmix=yes`），杜绝 5.1/7.1 声道叠加产生的数字硬削波破音；
+              - 全面升级 `scaletempo2` 高保真时钟拉伸滤镜与高质量重采样参数，杜绝倍速与音视频微调时的相位杂音。
           draft: false
           prerelease: false
         env:

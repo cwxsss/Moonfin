@@ -10,7 +10,7 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => '小褚播放器';
 
   @override
   String get animeMarkerFiller => '原创剧情';
@@ -173,7 +173,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String appVersionFooter(String version) {
-    return 'Moonfin 版本 $version';
+    return '小褚播放器 版本 $version';
   }
 
   @override
@@ -225,7 +225,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get secureStorageUnavailableMessage =>
-      'Moonfin 无法访问系统密钥环。仍可继续登录，但在密钥环解锁前，安全令牌存储可能不可用。';
+      '小褚播放器 无法访问系统密钥环。仍可继续登录，但在密钥环解锁前，安全令牌存储可能不可用。';
 
   @override
   String get ok => '确定';
@@ -502,7 +502,7 @@ class AppLocalizationsZh extends AppLocalizations {
       '使用 Moonfin Recommends 本地媒体库算法、Jellyfin Recommends 服务器引擎，或在线 TMDb 的相似度指标。注意：在线推荐需要集成 Seerr。';
 
   @override
-  String get recommendationSystemMoonfin => 'Moonfin 智能推荐';
+  String get recommendationSystemMoonfin => '小褚播放器 智能推荐';
 
   @override
   String get recommendationSystemJellyfin => '服务器推荐';
@@ -748,7 +748,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get exitApp => '退出 Moonfin？';
+  String get exitApp => '退出小褚播放器？';
 
   @override
   String get exitAppConfirmation => '确定要退出吗？';
@@ -1910,7 +1910,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shuffleAllMusic => '随机播放所有音乐';
 
   @override
-  String get carSignInPrompt => '在手机上登录 Moonfin';
+  String get carSignInPrompt => '在手机上登录小褚播放器';
 
   @override
   String get carServerUnreachable => '无法连接到服务器';
@@ -2194,7 +2194,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shortcutToggleFullscreen => '开启或关闭全屏';
 
   @override
-  String get shortcutQuit => '退出 Moonfin';
+  String get shortcutQuit => '退出小褚播放器';
 
   @override
   String get shortcutPlayPause => '播放或暂停';
@@ -4545,7 +4545,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get saveToDownloadsFolder => '保存到下载文件夹';
 
   @override
-  String get downloadsVisibleToOtherApps => 'Downloads/Moonfin — 对其他应用可见';
+  String get downloadsVisibleToOtherApps => 'Downloads/xcplay — 对其他应用可见';
 
   @override
   String get dangerZone => '危险区域';
@@ -4574,7 +4574,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get saveToDownloadsFolderDescription =>
-      '下载的媒体将保存到你的设备上的 Downloads/Moonfin 中。这些文件将对其他应用可见，例如你的图库或音乐播放器。\n\n现有下载将保留在当前位置。';
+      '下载的媒体将保存到你的设备上的 Downloads/xcplay 中。这些文件将对其他应用可见，例如你的图库或音乐播放器。\n\n现有下载将保留在当前位置。';
 
   @override
   String get transcodingTimeRemainingUnavailable => '转码中：剩余时间未知';
@@ -4853,7 +4853,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get libraryVisibility => '媒体库可见性';
 
   @override
-  String get libraryVisibilityDescription => '切换每个媒体库的主页可见性。重启 Moonfin 以使更改生效。';
+  String get libraryVisibilityDescription => '切换每个媒体库的主页可见性。重启小褚播放器以使更改生效。';
 
   @override
   String get showInNavigation => '在导航中显示';
@@ -5910,7 +5910,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get cancelRequest4k => '取消 4K 版本请求';
 
   @override
-  String get playInMoonfin => '在 Moonfin 中播放';
+  String get playInMoonfin => '在小褚播放器中播放';
 
   @override
   String get requestedByLabel => '请求者';
@@ -5955,7 +5955,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get keep => '保留';
 
   @override
-  String get itemNotFoundInLibrary => '在你的 Moonfin 媒体库中未找到此媒体项';
+  String get itemNotFoundInLibrary => '在你的小褚播放器媒体库中未找到此媒体项';
 
   @override
   String get errorSearchingLibrary => '搜索媒体库时出错';
@@ -7843,7 +7843,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get adminServerRebootInProgress => '服务器正在重启';
 
   @override
-  String get adminServerRebootMessage => '服务器正在重启，请重启 Moonfin';
+  String get adminServerRebootMessage => '服务器正在重启，请重启小褚播放器';
 
   @override
   String get adminActiveSessions => '活跃会话';
@@ -11499,7 +11499,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsLibraryVisibilitySubtitle =>
-      '切换每个媒体库的主页可见性。重启 Moonfin 以使更改生效。';
+      '切换每个媒体库的主页可见性。重启小褚播放器以使更改生效。';
 
   @override
   String get settingsMediaBarAndLocalPreviews => '媒体栏和本地预览';
@@ -11612,7 +11612,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsJoinTheDiscord => '加入 Discord';
 
   @override
-  String get settingsSupportMoonfin => '支持 Moonfin';
+  String get settingsSupportMoonfin => '支持小褚播放器';
 
   @override
   String get settingsSupportMoonfinSubtitle => '请开发者喝杯咖啡';
@@ -11630,13 +11630,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsPrivacyPolicy => '隐私政策';
 
   @override
-  String get settingsPrivacyPolicySubtitle => 'Moonfin 如何处理你的数据';
+  String get settingsPrivacyPolicySubtitle => '小褚播放器 如何处理你的数据';
 
   @override
   String get settingsCheckForUpdates => '检查更新';
 
   @override
-  String get settingsCheckForUpdatesSubtitle => '检查最新的 Moonfin 版本';
+  String get settingsCheckForUpdatesSubtitle => '检查最新的小褚播放器版本';
 
   @override
   String get settingsBoth => '两者';
@@ -12219,7 +12219,7 @@ class AppLocalizationsZh extends AppLocalizations {
       '选择推荐来源（Moonfin Recommends 为本地媒体库算法，Server Recommends 来自媒体服务器，TMDb 使用在线相似度指标。注意：在线推荐需要集成 Seerr）。';
 
   @override
-  String get sinceYouWatchedSourceLocal => 'Moonfin 智能推荐';
+  String get sinceYouWatchedSourceLocal => '小褚播放器 智能推荐';
 
   @override
   String get sinceYouWatchedSourceServer => '服务器推荐';
@@ -17502,10 +17502,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get remoteMediaNotificationSubtitle => '在另一台设备上观看时显示系统媒体控件';
 
   @override
-  String get remoteActivityWatching => '正在 Moonfin 上观看';
+  String get remoteActivityWatching => '正在小褚播放器上观看';
 
   @override
-  String get remoteActivityListening => '正在 Moonfin 上收听';
+  String get remoteActivityListening => '正在小褚播放器上收听';
 
   @override
   String get clickpadSeeking => '允许触控板定位进度';
@@ -17526,7 +17526,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   AppLocalizationsZhHant() : super('zh_Hant');
 
   @override
-  String get appTitle => 'Moonfin';
+  String get appTitle => '小褚播放器';
 
   @override
   String get animeMarkerPending => '待辦的';
@@ -17599,7 +17599,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String appVersionFooter(String version) {
-    return 'Moonfin 版本 $version';
+    return '小褚播放器 版本 $version';
   }
 
   @override
@@ -20429,7 +20429,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   String get saveToDownloadsFolder => '儲存到下載資料夾';
 
   @override
-  String get downloadsVisibleToOtherApps => 'Downloads/Moonfin — 對其他應用程式可見';
+  String get downloadsVisibleToOtherApps => 'Downloads/xcplay — 對其他應用程式可見';
 
   @override
   String get dangerZone => '危險區';
@@ -20458,7 +20458,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
 
   @override
   String get saveToDownloadsFolderDescription =>
-      '下載的媒體將會儲存到您裝置上的 Downloads/Moonfin 中。這些檔案將對其他應用程式可見，例如您的圖庫或音樂播放器。\n\n現有下載將保留在目前位置。';
+      '下載的媒體將會儲存到您裝置上的 Downloads/xcplay 中。這些檔案將對其他應用程式可見，例如您的圖庫或音樂播放器。\n\n現有下載將保留在目前位置。';
 
   @override
   String get enable => '使能夠';
@@ -21238,7 +21238,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   String get cancelRequest => '取消請求';
 
   @override
-  String get playInMoonfin => '在 Moonfin 中播放';
+  String get playInMoonfin => '在小褚播放器中播放';
 
   @override
   String requestedByName(String name) {

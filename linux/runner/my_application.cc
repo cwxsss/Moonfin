@@ -51,7 +51,7 @@ static void my_application_set_window_icon(GtkWindow* window) {
 #define MOONFIN_ENTRY_SIGNATURE            \
   "[Desktop Entry]\n"                      \
   "Type=Application\n"                     \
-  "Name=Moonfin\n"                         \
+  "Name=小褚播放器\n"                         \
   "Comment=Jellyfin & Emby media client\n" \
   "Exec=\""
 
@@ -305,7 +305,7 @@ static void my_application_activate(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
-  gtk_window_set_title(window, "Moonfin");
+  gtk_window_set_title(window, "小褚播放器");
   my_application_install_desktop_entry();
   my_application_set_window_icon(window);
 
