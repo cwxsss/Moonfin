@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag Name (e.g. v3.1.8)'
+        description: 'Release Tag Name (e.g. v3.1.9)'
         required: false
-        default: 'v3.1.8'
+        default: 'v3.1.9'
 
 permissions:
   contents: write
@@ -68,22 +68,19 @@ jobs:
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.8') }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.9') }}
           files: "*Windows*_v*.exe"
-          name: 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.8') }}
+          name: 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.9') }}
           body: |
-            ## 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.8') }}
+            ## 小褚播放器 (xcplay) Windows Release ${{ github.ref_type == 'tag' && github.ref_name || (github.event.inputs.tag_name || 'v3.1.9') }}
             
             ### ✨ 更新内容
-            - **窗口标题乱码彻底修复**：配置 MSVC `/utf-8` 编译参数并在 Windows Runner 采用 Unicode 宽字符编码，彻底消除 Windows 11/10 窗口左上角标题乱码问题（解决 `å° è¤šæ’­æ”¾å™¨` 现象）。
-            - **窗口自适应居中**：Windows 桌面端首次启动自动居中显示在屏幕中央，界面比例更舒适。
-            - **全面消除 Moonfin Logo 残留**：重构认证、欢迎、设置关于、屏保、投屏预览等 9 处主界面的品牌组件（`AppBrandLogo`），全部自动适配并显示「小褚播放器 (xcplay)」品牌，彻底消除 Moonfin 英文字样残留。
-            - **个人仓库与更新服务绑定**：应用内检查更新改连个人仓库 `cwxsss/Moonfin`，关于页面源码及问题反馈链接全面更新。
-            - **播放联动窗口标题**：播放电影、剧集时，Windows 窗口标题实时联动当前视频名称，多任务切换一目了然。
-            - **音频播放爆音/杂音修复**：
-              - 调大 mpv 音频缓冲至 500ms（`audio-buffer=0.5`），彻底消除 WASAPI 渲染高负载下的 Buffer Underrun 断流撕裂杂音；
-              - 开启多声道立体声下混防削波归一化（`audio-normalize-downmix=yes`），杜绝数字硬削波破音；
-              - 升级 `scaletempo2` 高保真时钟拉伸滤镜与高质量重采样参数。
+            - **Windows 原生标题栏深色模式与按钮修复**：强制启用 `DWMWA_USE_IMMERSIVE_DARK_MODE`，修复浅色系统主题下标题栏变白、关闭按钮白底白字隐形的渲染 Bug；显式配置高对比度暗黑底色、纯白标题字与控制按钮，确保最小化、最大化、关闭按钮始终清晰可见。
+            - **视频播放界面顶部 OSD 窗口控制**：桌面端播放视频时，顶部栏右上角新增【最小化】、【最大化/全屏切换】、【关闭播放】快捷按钮，鼠标滑至右上角即可一键操作。
+            - **播放器桌面端右键快捷上下文菜单**：右键点击播放画面即可唤起专业快捷菜单，快速切换播放/暂停、全屏、最小化、倍速（0.5x~2.0x）、音轨、字幕、码率及关闭播放。
+            - **智能鼠标滚轮调节**：默认平滑调节音量，按住 Shift 或 Ctrl 滚动可即时微调快进/快退。
+            - **主界面全屏窗口控制**：主界面在 F11 全屏浏览时顶栏右上角自动浮现窗口控制胶囊按钮，非全屏时无缝交由原生深色标题栏接管。
+            - **多显示器拔插越界保护**：当副屏拔掉导致保存的窗口坐标失联时，自动居中恢复至当前主屏幕，彻底杜绝窗口“飞出屏幕外”。
           draft: false
           prerelease: false
         env:

@@ -12,8 +12,28 @@ namespace {
 /// Redefined in case the developer's machine has a Windows SDK older than
 /// version 10.0.22000.0.
 /// See: https://docs.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
+#define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
+#endif
+
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
 #endif
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
@@ -144,6 +164,13 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  // Ensure window style explicitly includes caption, system menu, minimize and maximize buttons
+  LONG_PTR style = GetWindowLongPtr(window, GWL_STYLE);
+  style |= (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME);
+  SetWindowLongPtr(window, GWL_STYLE, style);
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
   UpdateTheme(window);
 
   return OnCreate();
@@ -220,12 +247,15 @@ Win32Window::MessageHandler(HWND hwnd,
       break;
 
     case WM_ACTIVATE:
+      UpdateTheme(hwnd);
       if (child_content_ != nullptr) {
         SetFocus(child_content_);
       }
       return 0;
 
     case WM_DWMCOLORIZATIONCOLORCHANGED:
+    case WM_THEMECHANGED:
+    case WM_SETTINGCHANGE:
       UpdateTheme(hwnd);
       return 0;
   }
@@ -290,16 +320,30 @@ void Win32Window::OnDestroy() {
 }
 
 void Win32Window::UpdateTheme(HWND const window) {
-  DWORD light_mode;
-  DWORD light_mode_size = sizeof(light_mode);
-  LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
-                               kGetPreferredBrightnessRegValue,
-                               RRF_RT_REG_DWORD, nullptr, &light_mode,
-                               &light_mode_size);
-
-  if (result == ERROR_SUCCESS) {
-    BOOL enable_dark_mode = light_mode == 0;
-    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+  // Moonfin (小褚播放器) 是暗色沉浸式媒体播放器。
+  // 窗口边框与标题栏始终强制启用深色沉浸式模式 (Immersive Dark Mode)，
+  // 无论 Windows 系统当前设置为深色还是浅色主题，均能确保：
+  // 1. 标题栏为深色，与播放器暗色界面无缝融合，避免刺眼白条；
+  // 2. 标题文字清晰可见；
+  // 3. 右上角最小化、最大化、关闭按钮对比度极高，彻底杜绝浅色模式下的按钮隐形 (White-on-White) 问题。
+  BOOL enable_dark_mode = TRUE;
+  if (FAILED(DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                   &enable_dark_mode, sizeof(enable_dark_mode)))) {
+    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
                           &enable_dark_mode, sizeof(enable_dark_mode));
   }
+
+  // Windows 11 (Build 22000+) 显式设置暗色标题栏、纯白文字、边框与圆角属性
+  COLORREF caption_color = RGB(20, 20, 24);   // 深色质感标题栏
+  DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
+
+  COLORREF text_color = RGB(255, 255, 255);      // 纯白高对比度文字与按钮
+  DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
+
+  COLORREF border_color = RGB(45, 45, 52);    // 精致暗色微边框
+  DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &border_color, sizeof(border_color));
+
+  // Windows 11 优雅圆角风格 (DWMWCP_ROUND = 2)
+  DWORD corner_preference = 2;
+  DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_preference, sizeof(corner_preference));
 }

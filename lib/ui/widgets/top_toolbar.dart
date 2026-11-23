@@ -8,6 +8,7 @@ import 'package:get_it/get_it.dart';
 import 'package:go_router/go_router.dart';
 import 'package:moonfin_design/moonfin_design.dart';
 import 'package:server_core/server_core.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../auth/repositories/user_repository.dart';
@@ -22,6 +23,7 @@ import '../../preference/seerr_preferences.dart';
 import '../../preference/user_preferences.dart';
 import '../../util/audio_artwork_url.dart';
 import '../../util/clock_format.dart';
+import '../../util/fullscreen_helper.dart';
 import '../../util/game_library.dart';
 import '../../util/live_tv_library.dart';
 import '../../util/overlay_color_palette.dart';
@@ -1308,7 +1310,77 @@ class _TopToolbarState extends State<TopToolbar> with RouteAware {
                   },
                 ),
               ),
+              if (PlatformDetection.useDesktopUi)
+                _buildDesktopWindowButtons(),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopWindowButtons() {
+    return FutureBuilder<bool>(
+      future: FullscreenHelper.isFullscreen(),
+      builder: (context, snapshot) {
+        final isFullscreen = snapshot.data ?? false;
+        if (!isFullscreen) return const SizedBox.shrink();
+
+        final l10n = AppLocalizations.of(context);
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(width: 8),
+            _buildWindowButton(
+              icon: Icons.remove_rounded,
+              tooltip: l10n.playerTooltipMinimize,
+              onPressed: () => windowManager.minimize(),
+            ),
+            const SizedBox(width: 4),
+            _buildWindowButton(
+              icon: Icons.fullscreen_exit_rounded,
+              tooltip: '${l10n.playerTooltipExitFullscreen} (F11)',
+              onPressed: () async {
+                await FullscreenHelper.setFullscreen(false);
+                if (mounted) setState(() {});
+              },
+            ),
+            const SizedBox(width: 4),
+            _buildWindowButton(
+              icon: Icons.close_rounded,
+              tooltip: '${l10n.close} (Ctrl+Q)',
+              onPressed: () => windowManager.close(),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildWindowButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 400),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onPressed,
+          child: Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              icon,
+              size: 16,
+              color: Colors.white.withValues(alpha: 0.9),
+            ),
           ),
         ),
       ),

@@ -29,6 +29,15 @@ Rect fitBoundsToWorkAreas(Rect saved, List<Rect> workAreas) {
 
   final width = math.min(saved.width, area.width);
   final height = math.min(saved.height, area.height);
+
+  // If the saved rectangle had zero overlap with any active display work area
+  // (e.g. secondary monitor unplugged), safely center it in the primary display work area.
+  if (bestOverlap <= 0.0) {
+    final centerX = area.left + (area.width - width) / 2;
+    final centerY = area.top + (area.height - height) / 2;
+    return Rect.fromLTWH(centerX, centerY, width, height);
+  }
+
   return Rect.fromLTWH(
     saved.left.clamp(area.left, math.max(area.left, area.right - width)),
     saved.top.clamp(area.top, math.max(area.top, area.bottom - height)),

@@ -245,6 +245,7 @@ Future<void> _restoreWindowGeometry() async {
     size: bounds?.size ?? const Size(1280, 720),
     minimumSize: const Size(minW, minH),
     center: !hasSavedGeometry && !startMaximized,
+    titleBarStyle: TitleBarStyle.normal,
     skipTaskbar: false,
   );
 

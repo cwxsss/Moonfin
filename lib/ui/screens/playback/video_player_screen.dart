@@ -4319,6 +4319,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             onSecondaryTap: PlatformDetection.isTV
                 ? null
                 : _onSurfaceSecondaryTap,
+            onSecondaryTapUp: PlatformDetection.useDesktopUi
+                ? (details) => _showDesktopContextMenu(details.globalPosition)
+                : null,
             onVerticalDragStart: swipeGestures ? _onVerticalDragStart : null,
             onVerticalDragUpdate: swipeGestures ? _onVerticalDragUpdate : null,
             onVerticalDragEnd: swipeGestures ? _onVerticalDragEnd : null,
@@ -5199,6 +5202,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   size: 30 * _osdButtonScale,
                 ),
               ),
+            if (PlatformDetection.useDesktopUi) ...[
+              IconButton(
+                onPressed: () => windowManager.minimize(),
+                tooltip: _tooltipMessage(l10n.playerTooltipMinimize),
+                icon: AdaptiveIcon(
+                  Icons.remove_rounded,
+                  color: Colors.white,
+                  size: 24 * _osdButtonScale,
+                ),
+              ),
+              IconButton(
+                onPressed: _toggleDesktopFullscreen,
+                tooltip: _tooltipMessage(
+                  _isDesktopFullscreen
+                      ? l10n.playerTooltipExitFullscreen
+                      : l10n.playerTooltipEnterFullscreen,
+                  shortcut: 'F11',
+                ),
+                icon: AdaptiveIcon(
+                  _isDesktopFullscreen
+                      ? Icons.fullscreen_exit_rounded
+                      : Icons.fullscreen_rounded,
+                  color: Colors.white,
+                  size: 26 * _osdButtonScale,
+                ),
+              ),
+              IconButton(
+                onPressed: _exitPlayback,
+                tooltip: _tooltipMessage(l10n.close, shortcut: 'Esc'),
+                icon: AdaptiveIcon(
+                  Icons.close_rounded,
+                  color: Colors.white,
+                  size: 24 * _osdButtonScale,
+                ),
+              ),
+            ],
             if (PlatformDetection.useMobileUi &&
                 _prefs.get(UserPreferences.osdLockEnabled))
               IconButton(
@@ -6696,6 +6735,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (dy == 0) return;
     final action = _prefs.get(UserPreferences.desktopScrollWheelAction);
     if (action == DesktopScrollWheelAction.off) return;
+
+    final keys = HardwareKeyboard.instance.logicalKeysPressed;
+    final isModifierPressed = keys.contains(LogicalKeyboardKey.shiftLeft) ||
+        keys.contains(LogicalKeyboardKey.shiftRight) ||
+        keys.contains(LogicalKeyboardKey.controlLeft) ||
+        keys.contains(LogicalKeyboardKey.controlRight);
+
+    final effectiveAction = isModifierPressed
+        ? (action == DesktopScrollWheelAction.volume
+            ? DesktopScrollWheelAction.seek
+            : DesktopScrollWheelAction.volume)
+        : action;
+
     // A mouse wheel notch arrives as one event of forty to sixty logical
     // pixels depending on the platform, but a trackpad spreads the same
     // motion over a stream of tiny ones, and stepping on every event slams
@@ -6716,7 +6768,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // scrollDelta.dy is negative when scrolling up / away from the user.
     final scrollingUp = _scrollWheelAccumulated < 0;
     _scrollWheelAccumulated = 0.0;
-    switch (action) {
+    switch (effectiveAction) {
       case DesktopScrollWheelAction.off:
         return;
       case DesktopScrollWheelAction.volume:
@@ -6937,6 +6989,145 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _onSurfaceSecondaryTap() {
     if (_dismissControlsOrOverlays()) {
       _suppressHoverControls();
+    }
+  }
+
+  Future<void> _showDesktopContextMenu(Offset globalPosition) async {
+    final l10n = AppLocalizations.of(context);
+    final isPlaying = _state.isPlaying;
+
+    PopupMenuItem<String> buildItem({
+      required String value,
+      required IconData icon,
+      required String label,
+      String? shortcut,
+      Color? iconColor,
+      Color? textColor,
+    }) {
+      return PopupMenuItem<String>(
+        value: value,
+        height: 38,
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: iconColor ?? Colors.white.withValues(alpha: 0.9),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: textColor ?? Colors.white.withValues(alpha: 0.95),
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+            ),
+            if (shortcut != null) ...[
+              const SizedBox(width: 16),
+              Text(
+                shortcut,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.38),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        globalPosition.dx + 1,
+        globalPosition.dy + 1,
+      ),
+      color: const Color(0xFF1E1E24),
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: const BorderSide(color: Color(0x26FFFFFF), width: 1),
+      ),
+      items: [
+        buildItem(
+          value: 'play_pause',
+          icon: isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          label: isPlaying ? l10n.pause : l10n.play,
+          shortcut: 'Space',
+        ),
+        buildItem(
+          value: 'fullscreen',
+          icon: _isDesktopFullscreen
+              ? Icons.fullscreen_exit_rounded
+              : Icons.fullscreen_rounded,
+          label: _isDesktopFullscreen
+              ? l10n.playerTooltipExitFullscreen
+              : l10n.playerTooltipEnterFullscreen,
+          shortcut: 'F11',
+        ),
+        buildItem(
+          value: 'minimize',
+          icon: Icons.remove_rounded,
+          label: l10n.playerTooltipMinimize,
+        ),
+        const PopupMenuDivider(height: 1),
+        buildItem(
+          value: 'speed',
+          icon: Icons.speed_rounded,
+          label: '${l10n.playerTooltipPlaybackSpeed} (${_state.playbackSpeed}x)',
+        ),
+        buildItem(
+          value: 'audio',
+          icon: Icons.audiotrack_rounded,
+          label: l10n.audio,
+        ),
+        buildItem(
+          value: 'subtitle',
+          icon: Icons.subtitles_rounded,
+          label: l10n.subtitles,
+        ),
+        buildItem(
+          value: 'bitrate',
+          icon: Icons.video_settings_outlined,
+          label: l10n.bitrate,
+        ),
+        const PopupMenuDivider(height: 1),
+        buildItem(
+          value: 'close',
+          icon: Icons.close_rounded,
+          label: l10n.close,
+          shortcut: 'Esc',
+          iconColor: const Color(0xFFFF5252),
+          textColor: const Color(0xFFFF6E6E),
+        ),
+      ],
+    );
+
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case 'play_pause':
+        _togglePlayPause();
+      case 'fullscreen':
+        unawaited(_toggleDesktopFullscreen());
+      case 'minimize':
+        unawaited(windowManager.minimize());
+      case 'speed':
+        _showSpeedSelector();
+      case 'audio':
+        _showTrackSelector(audio: true);
+      case 'subtitle':
+        _showTrackSelector(audio: false);
+      case 'bitrate':
+        _showBitrateSelector();
+      case 'close':
+        unawaited(_exitPlayback());
     }
   }
 

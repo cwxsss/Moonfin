@@ -38,9 +38,12 @@ Future<void> setFullscreen(bool value) async {
       await windowManager.setFullScreen(true);
     } else {
       await windowManager.setFullScreen(false);
+      if (PlatformDetection.isWindows) {
+        await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      }
       if (_wasMaximized) {
         if (PlatformDetection.isWindows) {
-          await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+          await windowManager.maximize();
         } else {
           await windowManager.maximize();
         }
