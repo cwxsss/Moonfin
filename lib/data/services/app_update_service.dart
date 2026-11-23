@@ -47,7 +47,7 @@ class AppUpdateService {
   AppUpdateService(this._store, this._userPreferences);
 
   static const _latestReleaseHost = 'api.github.com';
-  static const _latestReleasePath = '/repos/Moonfin-Client/Moonfin-Core/releases/latest';
+  static const _latestReleasePath = '/repos/cwxsss/Moonfin/releases/latest';
   static const _checkCooldown = Duration(hours: 24);
 
   static const _lastCheckMsKey = 'app_update_last_check_ms';
@@ -227,7 +227,7 @@ class AppUpdateService {
       }
 
       final htmlUrl = decoded['html_url']?.toString() ??
-          'https://github.com/Moonfin-Client/Moonfin-Core/releases/latest';
+          'https://github.com/cwxsss/Moonfin/releases/latest';
 
       final assetsJson = decoded['assets'];
       final assets = <_ReleaseAsset>[];

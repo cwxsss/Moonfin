@@ -48,6 +48,7 @@ import '../../../util/pin_code_util.dart';
 import '../../../util/signed_in_server_features.dart';
 import '../../widgets/pin_entry_dialog.dart';
 import '../../widgets/app_update_dialog.dart';
+import '../../widgets/app_brand_logo.dart';
 import '../../widgets/settings/settings_backup_dialog.dart';
 
 import '../../../auth/store/authentication_preferences.dart';

@@ -12,8 +12,8 @@ class _AboutCategoryScreen extends StatelessWidget {
       body: ListView(
         children: [
           const SizedBox(height: 24),
-          Center(
-            child: Image.asset('assets/images/logo_and_text.png', height: 72),
+          const Center(
+            child: AppBrandLogo(height: 64),
           ),
           const SizedBox(height: 8),
           Center(
@@ -43,7 +43,7 @@ class _AboutCategoryScreen extends StatelessWidget {
                 subtitle: Text(l10n.sourceCodeUrl),
                 onTap: () => showQrOrLaunch(
                   context,
-                  url: 'https://github.com/Moonfin-Client/Moonfin-Core',
+                  url: 'https://github.com/cwxsss/Moonfin',
                   title: l10n.sourceCode,
                 ),
               ),
@@ -53,7 +53,7 @@ class _AboutCategoryScreen extends StatelessWidget {
                 subtitle: Text(l10n.settingsReportAnIssueSubtitle),
                 onTap: () => showQrOrLaunch(
                   context,
-                  url: 'https://github.com/Moonfin-Client/Moonfin-Core/issues',
+                  url: 'https://github.com/cwxsss/Moonfin/issues',
                   title: l10n.settingsReportAnIssue,
                 ),
               ),

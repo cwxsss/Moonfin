@@ -9,6 +9,7 @@ import '../../util/artwork_timing.dart';
 import '../../util/clock_format.dart';
 import '../widgets/offline_aware_image.dart';
 import '../widgets/playback/loading_animation_widget.dart';
+import '../widgets/app_brand_logo.dart';
 import 'bouncing_box.dart';
 import 'screensaver_content_service.dart';
 import 'screensaver_gradient_backdrops.dart';
@@ -176,9 +177,8 @@ class _ScreensaverViewState extends State<ScreensaverView> {
         case ScreensaverComponent.none:
           return const SizedBox.shrink();
         case ScreensaverComponent.moonfinLogo:
-          return Image.asset(
-            'assets/images/logo_and_text.png',
-            fit: BoxFit.contain,
+          return Center(
+            child: AppBrandLogo(height: 56 * scale),
           );
         case ScreensaverComponent.clock:
           return ScreensaverClock(

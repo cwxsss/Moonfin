@@ -19,6 +19,7 @@ import '../../widgets/adaptive/adaptive_dialog.dart';
 import '../../widgets/overlay_sheet.dart';
 import '../../widgets/pin_entry_dialog.dart';
 import '../../widgets/focus/request_initial_focus.dart';
+import '../../widgets/app_brand_logo.dart';
 
 class StartupScreen extends StatefulWidget {
   final bool bootstrapActiveSession;
@@ -228,9 +229,8 @@ class _StartupScreenState extends State<StartupScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Image.asset(
-                  'assets/images/logo_and_text.png',
-                  height: _isLargeScreen ? 80 : 56,
+                AppBrandLogo(
+                  height: _isLargeScreen ? 72 : 52,
                 ),
                 const SizedBox(height: 32),
                 SizedBox(

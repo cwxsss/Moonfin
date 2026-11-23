@@ -5898,7 +5898,7 @@ class AppLocalizationsSv extends AppLocalizations {
   String get sourceCode => 'Källkod';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Sök efter uppdateringar nu';

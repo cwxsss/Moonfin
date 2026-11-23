@@ -5693,7 +5693,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sourceCode => '源代码';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => '立即检查更新';
@@ -21100,7 +21100,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   String get sourceCode => '原始碼';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => '立即檢查更新';

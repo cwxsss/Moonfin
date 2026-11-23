@@ -5903,7 +5903,7 @@ class AppLocalizationsPt extends AppLocalizations {
   String get sourceCode => 'Código Fonte';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Verificar Atualizações Agora';
@@ -23755,7 +23755,7 @@ class AppLocalizationsPtBr extends AppLocalizationsPt {
   String get sourceCode => 'Código Fonte';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Verifique se há atualizações agora';
@@ -38817,7 +38817,7 @@ class AppLocalizationsPtPt extends AppLocalizationsPt {
   String get sourceCode => 'Código-fonte';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Verificar atualizações agora';

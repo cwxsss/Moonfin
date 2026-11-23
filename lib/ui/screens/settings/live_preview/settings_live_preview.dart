@@ -38,6 +38,7 @@ import '../../../widgets/adaptive/sf_symbol.dart';
 import '../../../widgets/book/book_navigation.dart' show BookCategoryKind;
 import '../../../widgets/bounded_network_image.dart';
 import '../../../widgets/image_source.dart';
+import '../../../widgets/app_brand_logo.dart';
 import '../../../widgets/playback/chapter_marker_track.dart';
 import '../../../widgets/playback/loading_animation_widget.dart';
 import '../../../widgets/playback/next_up_overlay.dart';
@@ -1788,9 +1789,8 @@ class SettingsScreensaverPreview extends StatelessWidget {
     };
     Widget content({required bool movingLeft}) => switch (component) {
       ScreensaverComponent.none => const SizedBox.shrink(),
-      ScreensaverComponent.moonfinLogo => Image.asset(
-        'assets/images/logo_and_text.png',
-        fit: BoxFit.contain,
+      ScreensaverComponent.moonfinLogo => Center(
+        child: AppBrandLogo(height: 56 * scale),
       ),
       ScreensaverComponent.clock => ScreensaverClock(
         opacity: 1 - (dimming / 100) * 0.7,

@@ -5906,7 +5906,7 @@ class AppLocalizationsSw extends AppLocalizations {
   String get sourceCode => 'Msimbo wa Chanzo';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Angalia Sasisho Sasa';

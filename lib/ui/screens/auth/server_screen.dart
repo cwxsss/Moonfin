@@ -23,6 +23,7 @@ import '../../navigation/destinations.dart';
 import '../../widgets/login_scaffold.dart';
 import '../../widgets/pin_entry_dialog.dart';
 import '../../widgets/profile_carousel.dart';
+import '../../widgets/app_brand_logo.dart';
 import 'silo_profile_unlock.dart';
 
 class ServerScreen extends StatefulWidget {
@@ -512,7 +513,7 @@ class _ServerScreenState extends State<ServerScreen> {
     final color = AppColorScheme.onSurface.withValues(alpha: 0.65);
     return Row(
       children: [
-        Image.asset('assets/images/logo_and_text.png', height: logoHeight),
+        AppBrandLogo(height: logoHeight),
         const SizedBox(width: 16),
         Expanded(
           child: Row(

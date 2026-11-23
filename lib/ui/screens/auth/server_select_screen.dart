@@ -30,6 +30,7 @@ import '../../widgets/adaptive/adaptive_dialog.dart';
 import '../../widgets/allow_self_signed_dialog.dart';
 import '../../widgets/login_scaffold.dart';
 import '../../widgets/overlay_sheet.dart';
+import '../../widgets/app_brand_logo.dart';
 import '../../widgets/server_type_icon.dart';
 import 'add_server_dialog.dart';
 
@@ -543,9 +544,9 @@ class _ServerSelectScreenState extends State<ServerSelectScreen> {
     final l10n = AppLocalizations.of(context);
 
     return LoginScaffold(
-      header: Padding(
-        padding: const EdgeInsets.only(bottom: 24),
-        child: Image.asset('assets/images/logo_and_text.png', height: 80),
+      header: const Padding(
+        padding: EdgeInsets.only(bottom: 24),
+        child: AppBrandLogo(height: 72),
       ),
       footer: Padding(
         padding: const EdgeInsets.only(top: 16),

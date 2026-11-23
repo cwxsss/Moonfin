@@ -19,6 +19,7 @@ import '../../widgets/focus/request_initial_focus.dart';
 import '../../widgets/login_scaffold.dart';
 import '../../widgets/server_type_icon.dart';
 import '../../widgets/sign_in_qr_code.dart';
+import '../../widgets/app_brand_logo.dart';
 
 class PlexSignInScreen extends StatefulWidget {
   /// A server address typed in by hand, tried before the ones plex.tv knows.
@@ -180,9 +181,9 @@ class _PlexSignInScreenState extends State<PlexSignInScreen> {
     return RequestInitialFocus(
       child: LoginScaffold(
         maxWidth: qrPin == null ? 700 : 900,
-        header: Padding(
-          padding: const EdgeInsets.only(bottom: 24),
-          child: Image.asset('assets/images/logo_and_text.png', height: 80),
+        header: const Padding(
+          padding: EdgeInsets.only(bottom: 24),
+          child: AppBrandLogo(height: 72),
         ),
         footer: AnimatedContainer(
           duration: const Duration(milliseconds: 180),

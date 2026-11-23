@@ -5954,7 +5954,7 @@ class AppLocalizationsCa extends AppLocalizations {
   String get sourceCode => 'Codi font';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Comproveu si hi ha actualitzacions ara';

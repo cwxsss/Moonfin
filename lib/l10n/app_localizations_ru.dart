@@ -5909,7 +5909,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get sourceCode => 'Исходный код';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Проверьте наличие обновлений сейчас';

@@ -14,6 +14,7 @@ import '../../widgets/credential_field.dart';
 import '../../widgets/login_scaffold.dart';
 import '../../widgets/server_type_icon.dart';
 import '../../widgets/focus/request_initial_focus.dart';
+import '../../widgets/app_brand_logo.dart';
 
 enum _EmbyConnectPhase {
   credentials,
@@ -212,9 +213,9 @@ class _EmbyConnectScreenState extends State<EmbyConnectScreen> {
     final l10n = AppLocalizations.of(context);
     return LoginScaffold(
       maxWidth: 700,
-      header: Padding(
-        padding: const EdgeInsets.only(bottom: 24),
-        child: Image.asset('assets/images/logo_and_text.png', height: 80),
+      header: const Padding(
+        padding: EdgeInsets.only(bottom: 24),
+        child: AppBrandLogo(height: 72),
       ),
       footer: AnimatedContainer(
         duration: const Duration(milliseconds: 180),

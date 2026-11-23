@@ -5928,7 +5928,7 @@ class AppLocalizationsEl extends AppLocalizations {
   String get sourceCode => 'Πηγαίος κώδικας';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Ελέγξτε για ενημερώσεις τώρα';

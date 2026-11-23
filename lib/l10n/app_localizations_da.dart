@@ -5880,7 +5880,7 @@ class AppLocalizationsDa extends AppLocalizations {
   String get sourceCode => 'Kildekode';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Søg efter opdateringer nu';

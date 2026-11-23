@@ -5911,7 +5911,7 @@ class AppLocalizationsSq extends AppLocalizations {
   String get sourceCode => 'Kodi burimor';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'Kontrolloni për përditësime tani';

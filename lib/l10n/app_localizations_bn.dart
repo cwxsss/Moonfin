@@ -5875,7 +5875,7 @@ class AppLocalizationsBn extends AppLocalizations {
   String get sourceCode => 'সোর্স কোড';
 
   @override
-  String get sourceCodeUrl => 'https://github.com/Moonfin-Client/Moonfin-Core';
+  String get sourceCodeUrl => 'https://github.com/cwxsss/Moonfin';
 
   @override
   String get checkForUpdatesNow => 'এখন আপডেটের জন্য চেক করুন';

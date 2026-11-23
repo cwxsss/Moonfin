@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 import 'package:playback_core/playback_core.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../../data/models/aggregated_item.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../util/platform_detection.dart';
 import '../../navigation/app_router.dart';
 
 /// Names the browser tab after what's playing, like "Hamilton - Moonfin", and
@@ -63,8 +65,14 @@ class _PlaybackTabTitleState extends State<PlaybackTabTitle> {
   Widget build(BuildContext context) {
     final appTitle = AppLocalizations.of(context).appTitle;
     final playing = _playingName;
+    final currentTitle = playing == null ? appTitle : '$playing - $appTitle';
+
+    if (PlatformDetection.isDesktop) {
+      windowManager.setTitle(currentTitle);
+    }
+
     return Title(
-      title: playing == null ? appTitle : '$playing - $appTitle',
+      title: currentTitle,
       color: Theme.of(context).primaryColor,
       child: widget.child,
     );

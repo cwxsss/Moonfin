@@ -245,8 +245,13 @@ class _MoonfinAppState extends State<MoonfinApp> {
           animation: _themeController,
           builder: (context, _) {
             return MaterialApp.router(
-              onGenerateTitle: (context) =>
-                  AppLocalizations.of(context).appTitle,
+              onGenerateTitle: (context) {
+                final title = AppLocalizations.of(context).appTitle;
+                if (PlatformDetection.isDesktop) {
+                  windowManager.setTitle(title);
+                }
+                return title;
+              },
               theme: AppTheme.buildTheme(_themeController.activeSpec),
               routerConfig: appRouter,
               debugShowCheckedModeBanner: false,
